@@ -42,7 +42,7 @@ export function useSpeechRecognition({ onResult, onError, lang = "en-US" }: Opti
       if (debounceTimer) { clearTimeout(debounceTimer); debounceTimer = null; }
     };
 
-    r.onresult = (event) => {
+    r.onresult = (event: any) => {
       for (let i = event.resultIndex; i < event.results.length; i++) {
         if (event.results[i].isFinal) {
           const t = event.results[i][0].transcript.trim();
@@ -65,7 +65,7 @@ export function useSpeechRecognition({ onResult, onError, lang = "en-US" }: Opti
       }, SILENCE_MS);
     };
 
-    r.onerror = (event) => {
+    r.onerror = (event: any) => {
       clearDebounce();
       accumulated = "";
       if (event.error === "aborted") return;
