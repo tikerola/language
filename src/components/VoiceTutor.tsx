@@ -5,17 +5,24 @@ import { useSpeechRecognition } from "@/hooks/useSpeechRecognition";
 import { useSpeechSynthesis } from "@/hooks/useSpeechSynthesis";
 
 type Phase = "idle" | "listening" | "processing" | "speaking" | "error";
+type Mode = "english" | "german" | "discussion";
 
-interface Translation {
-  german: string;
-  literal: string;
-  pronunciation: string;
-}
+type Result =
+  | { mode: "english"; german: string; literal: string; pronunciation: string }
+  | { mode: "german"; german: string; note: string }
+  | { mode: "discussion"; german: string };
+
+const MODE_LANG: Record<Mode, string> = {
+  english: "en-US",
+  german: "de-DE",
+  discussion: "de-DE",
+};
 
 export default function VoiceTutor() {
   const [phase, setPhase] = useState<Phase>("idle");
-  const [english, setEnglish] = useState("");
-  const [translation, setTranslation] = useState<Translation | null>(null);
+  const [mode, setMode] = useState<Mode>("english");
+  const [spoken, setSpoken] = useState("");
+  const [result, setResult] = useState<Result | null>(null);
   const [errorMsg, setErrorMsg] = useState("");
   const [showDetails, setShowDetails] = useState(false);
   const [repeatMode, setRepeatMode] = useState(false);
@@ -23,6 +30,7 @@ export default function VoiceTutor() {
   const repeatModeRef = useRef(false);
   const hasRepeatedRef = useRef(false);
   const currentGermanRef = useRef("");
+  const lastDiscussionReplyRef = useRef("");
 
   useEffect(() => { repeatModeRef.current = repeatMode; }, [repeatMode]);
 
@@ -41,21 +49,29 @@ export default function VoiceTutor() {
 
   const handleTranscript = useCallback(
     async (transcript: string) => {
-      setEnglish(transcript);
+      setSpoken(transcript);
       setPhase("processing");
 
       try {
         const res = await fetch("/api/translate", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ text: transcript }),
+          body: JSON.stringify({
+            text: transcript,
+            mode,
+            ...(mode === "discussion" && lastDiscussionReplyRef.current
+              ? { context: lastDiscussionReplyRef.current }
+              : {}),
+          }),
         });
 
         if (!res.ok) throw new Error("Translation failed");
 
-        const data: Translation = await res.json();
-        setTranslation(data);
+        const data = await res.json();
+        const tagged: Result = { ...data, mode };
+        setResult(tagged);
         currentGermanRef.current = data.german;
+        if (mode === "discussion") lastDiscussionReplyRef.current = data.german;
         hasRepeatedRef.current = false;
         setPhase("speaking");
         speak(data.german);
@@ -68,7 +84,7 @@ export default function VoiceTutor() {
         }, 2000);
       }
     },
-    [speak]
+    [speak, mode]
   );
 
   const handleError = useCallback((msg: string) => {
@@ -79,12 +95,13 @@ export default function VoiceTutor() {
   const { start, stop, restart } = useSpeechRecognition({
     onResult: handleTranscript,
     onError: handleError,
+    lang: MODE_LANG[mode],
   });
 
   const handleStart = useCallback(() => {
     setPhase("listening");
-    setEnglish("");
-    setTranslation(null);
+    setSpoken("");
+    setResult(null);
     start();
   }, [start]);
 
@@ -93,6 +110,21 @@ export default function VoiceTutor() {
     cancel();
     setPhase("idle");
   }, [stop, cancel]);
+
+  const handleModeChange = useCallback(
+    (next: Mode) => {
+      if (phase !== "idle") {
+        stop();
+        cancel();
+        setPhase("idle");
+      }
+      setMode(next);
+      setSpoken("");
+      setResult(null);
+      lastDiscussionReplyRef.current = "";
+    },
+    [phase, stop, cancel]
+  );
 
   // Space bar to start/stop
   useEffect(() => {
@@ -109,8 +141,8 @@ export default function VoiceTutor() {
 
   const phaseLabel: Record<Phase, string> = {
     idle: "Press Start or Space",
-    listening: "Listening...",
-    processing: "Translating...",
+    listening: mode === "english" ? "Listening..." : "Listening... (speak German)",
+    processing: mode === "english" ? "Translating..." : mode === "german" ? "Checking..." : "Thinking...",
     speaking: "Speaking...",
     error: errorMsg || "Error",
   };
@@ -119,9 +151,30 @@ export default function VoiceTutor() {
 
   return (
     <div className="min-h-screen bg-gray-950 text-white flex flex-col items-center justify-center p-6 select-none">
-      <h1 className="text-xl font-semibold tracking-wide text-gray-400 mb-12">
+      <h1 className="text-xl font-semibold tracking-wide text-gray-400 mb-8">
         German Voice Tutor
       </h1>
+
+      {/* Mode selector */}
+      <div className="flex gap-2 mb-10">
+        {([
+          ["english", "EN → DE"],
+          ["german", "DE correction"],
+          ["discussion", "DE chat"],
+        ] as [Mode, string][]).map(([m, label]) => (
+          <button
+            key={m}
+            onClick={() => handleModeChange(m)}
+            className={`px-4 py-1.5 rounded-full text-xs font-medium tracking-wide transition-colors
+              ${mode === m
+                ? "bg-white text-gray-900"
+                : "bg-gray-800 text-gray-400 hover:text-gray-200"
+              }`}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
 
       {/* Mic button */}
       <button
@@ -134,7 +187,7 @@ export default function VoiceTutor() {
           ${phase === "error" ? "bg-gray-700" : ""}
         `}
       >
-        {phase === "listening" ? "🎙️" : phase === "processing" ? "⏳" : phase === "speaking" ? "🔊" : "🎙️"}
+        {phase === "processing" ? "⏳" : phase === "speaking" ? "🔊" : "🎙️"}
       </button>
 
       {/* Status */}
@@ -142,38 +195,43 @@ export default function VoiceTutor() {
         {phaseLabel[phase]}
       </p>
 
-      {/* English transcript */}
-      {english && (
+      {/* Transcript */}
+      {spoken && (
         <div className="mt-10 w-full max-w-md">
           <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">You said</p>
-          <p className="text-gray-300 text-lg">{english}</p>
+          <p className="text-gray-300 text-lg">{spoken}</p>
         </div>
       )}
 
-      {/* German translation */}
-      {translation && (
+      {/* Result */}
+      {result && (
         <div className="mt-6 w-full max-w-md">
-          <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">German</p>
-          <p className="text-white text-2xl font-medium">{translation.german}</p>
+          <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">
+            {result.mode === "discussion" ? "Reply" : result.mode === "german" && result.note ? "Correction" : "German"}
+          </p>
+          <p className="text-white text-2xl font-medium">{result.german}</p>
 
-          <button
-            onClick={() => setShowDetails((v) => !v)}
-            className="mt-3 text-xs text-gray-500 hover:text-gray-300 underline"
-          >
-            {showDetails ? "Hide details" : "Show details"}
-          </button>
+          {result.mode === "english" && (
+            <>
+              <button
+                onClick={() => setShowDetails((v) => !v)}
+                className="mt-3 text-xs text-gray-500 hover:text-gray-300 underline"
+              >
+                {showDetails ? "Hide details" : "Show details"}
+              </button>
+              {showDetails && (
+                <div className="mt-3 space-y-2 text-sm text-gray-400">
+                  <p><span className="text-gray-500">Literal: </span>{result.literal}</p>
+                  <p><span className="text-gray-500">Pronunciation: </span>{result.pronunciation}</p>
+                </div>
+              )}
+            </>
+          )}
 
-          {showDetails && (
-            <div className="mt-3 space-y-2 text-sm text-gray-400">
-              <p>
-                <span className="text-gray-500">Literal: </span>
-                {translation.literal}
-              </p>
-              <p>
-                <span className="text-gray-500">Pronunciation: </span>
-                {translation.pronunciation}
-              </p>
-            </div>
+          {result.mode === "german" && result.note && (
+            <p className="mt-3 text-sm text-gray-400">
+              <span className="text-gray-500">Note: </span>{result.note}
+            </p>
           )}
         </div>
       )}

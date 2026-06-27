@@ -5,16 +5,21 @@ import { useEffect, useRef, useCallback } from "react";
 interface Options {
   onResult: (transcript: string) => void;
   onError?: (error: string) => void;
+  lang?: string;
 }
 
-export function useSpeechRecognition({ onResult, onError }: Options) {
+// How long to wait after the last speech fragment before sending to AI
+const SILENCE_MS = 1500;
+
+export function useSpeechRecognition({ onResult, onError, lang = "en-US" }: Options) {
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const onResultRef = useRef(onResult);
   const onErrorRef = useRef(onError);
+  const langRef = useRef(lang);
 
-  // Keep refs current without recreating recognition on every render
   useEffect(() => { onResultRef.current = onResult; });
   useEffect(() => { onErrorRef.current = onError; });
+  useEffect(() => { langRef.current = lang; }, [lang]);
 
   const build = useCallback((): SpeechRecognition | null => {
     const SR = window.SpeechRecognition || (window as any).webkitSpeechRecognition;
@@ -22,23 +27,73 @@ export function useSpeechRecognition({ onResult, onError }: Options) {
       onErrorRef.current?.("Speech recognition not supported. Use Chrome.");
       return null;
     }
+
     const r: SpeechRecognition = new SR();
-    r.lang = "en-US";
-    r.continuous = false;
+    r.lang = langRef.current;
+    r.continuous = true;
     r.interimResults = false;
-    r.onresult = (event) => {
-      const transcript = event.results[0]?.[0]?.transcript?.trim();
-      if (transcript) onResultRef.current(transcript);
+
+    let stopped = false;   // true when we intentionally stopped after getting a result
+    let hadError = false;  // true on genuine errors so onend doesn't restart
+    let accumulated = "";
+    let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const clearDebounce = () => {
+      if (debounceTimer) { clearTimeout(debounceTimer); debounceTimer = null; }
     };
+
+    r.onresult = (event) => {
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        if (event.results[i].isFinal) {
+          const t = event.results[i][0].transcript.trim();
+          if (t) accumulated += (accumulated ? " " : "") + t;
+        }
+      }
+
+      if (!accumulated) return;
+
+      clearDebounce();
+      debounceTimer = setTimeout(() => {
+        const transcript = accumulated.trim();
+        accumulated = "";
+        debounceTimer = null;
+        if (transcript) {
+          stopped = true;
+          try { r.abort(); } catch { /* ignore */ }
+          onResultRef.current(transcript);
+        }
+      }, SILENCE_MS);
+    };
+
     r.onerror = (event) => {
-      if (event.error === "no-speech" || event.error === "aborted") return;
+      clearDebounce();
+      accumulated = "";
+      if (event.error === "aborted") return;
+      if (event.error === "no-speech") return; // onend will restart
+      hadError = true;
       onErrorRef.current?.(`Speech error: ${event.error}`);
     };
+
+    r.onend = () => {
+      if (stopped || hadError) return;
+      if (recognitionRef.current !== r) return; // another instance already took over
+      // Unexpected end (no-speech timeout, brief network blip) — restart transparently
+      setTimeout(() => {
+        if (recognitionRef.current !== r) return;
+        const fresh = build();
+        if (!fresh) return;
+        recognitionRef.current = fresh;
+        try { fresh.start(); } catch { /* ignore */ }
+      }, 300);
+    };
+
     return r;
   }, []);
 
   const start = useCallback(() => {
-    recognitionRef.current?.abort();
+    const prev = recognitionRef.current;
+    recognitionRef.current = null; // clear before abort so onend doesn't restart
+    prev?.abort();
     const r = build();
     if (!r) return;
     recognitionRef.current = r;
@@ -46,23 +101,29 @@ export function useSpeechRecognition({ onResult, onError }: Options) {
   }, [build]);
 
   const stop = useCallback(() => {
-    recognitionRef.current?.abort();
+    const r = recognitionRef.current;
     recognitionRef.current = null;
+    r?.abort();
   }, []);
 
   const restart = useCallback(() => {
-    recognitionRef.current?.abort();
+    const r = recognitionRef.current;
     recognitionRef.current = null;
+    r?.abort();
     setTimeout(() => {
-      const r = build();
-      if (!r) return;
-      recognitionRef.current = r;
-      try { r.start(); } catch { /* ignore */ }
+      const fresh = build();
+      if (!fresh) return;
+      recognitionRef.current = fresh;
+      try { fresh.start(); } catch { /* ignore */ }
     }, 300);
   }, [build]);
 
   useEffect(() => {
-    return () => { recognitionRef.current?.abort(); };
+    return () => {
+      const r = recognitionRef.current;
+      recognitionRef.current = null;
+      r?.abort();
+    };
   }, []);
 
   return { start, stop, restart };
