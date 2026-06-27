@@ -136,13 +136,12 @@ export function useSpeechRecognition({ onResult, onError, lang = "en-US" }: Opti
   }, []);
 
   const restart = useCallback(() => {
-    const delay = RESUME_DELAY_MS;
-    if (runningRef.current && recognitionRef.current) {
-      // Session alive — just re-enable after echo window
-      setTimeout(() => { activeRef.current = true; }, delay);
-      return;
-    }
-    // Session died while paused — start a fresh one after echo window
+    // Always start a fresh instance — avoids Android silent-session-death
+    const prev = recognitionRef.current;
+    recognitionRef.current = null;
+    runningRef.current = false;
+    prev?.abort();
+
     setTimeout(() => {
       const fresh = build();
       if (!fresh) return;
@@ -150,7 +149,7 @@ export function useSpeechRecognition({ onResult, onError, lang = "en-US" }: Opti
       activeRef.current = true;
       runningRef.current = true;
       try { fresh.start(); } catch { runningRef.current = false; }
-    }, delay);
+    }, RESUME_DELAY_MS);
   }, [build]);
 
   // Called by the component after TTS speaks, so we know what to treat as echo
