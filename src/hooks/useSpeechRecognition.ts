@@ -5,6 +5,7 @@ import { useEffect, useRef, useCallback } from "react";
 interface Options {
   onResult: (transcript: string) => void;
   onError?: (error: string) => void;
+  onAudioStart?: () => void;
   lang?: string;
   silenceMs?: number;
   resumeDelayMs?: number;
@@ -21,10 +22,11 @@ function isEcho(transcript: string, ttsText: string): boolean {
   return overlap / a.length > 0.6;
 }
 
-export function useSpeechRecognition({ onResult, onError, lang = "en-US", silenceMs, resumeDelayMs }: Options) {
+export function useSpeechRecognition({ onResult, onError, onAudioStart, lang = "en-US", silenceMs, resumeDelayMs }: Options) {
   const recognitionRef = useRef<any>(null);
   const onResultRef = useRef(onResult);
   const onErrorRef = useRef(onError);
+  const onAudioStartRef = useRef(onAudioStart);
   const langRef = useRef(lang);
   const silenceMsRef = useRef(silenceMs ?? DEFAULT_SILENCE_MS);
   const resumeDelayMsRef = useRef(resumeDelayMs ?? DEFAULT_RESUME_DELAY_MS);
@@ -35,6 +37,7 @@ export function useSpeechRecognition({ onResult, onError, lang = "en-US", silenc
 
   useEffect(() => { onResultRef.current = onResult; });
   useEffect(() => { onErrorRef.current = onError; });
+  useEffect(() => { onAudioStartRef.current = onAudioStart; });
   useEffect(() => { langRef.current = lang; }, [lang]);
   useEffect(() => { silenceMsRef.current = silenceMs ?? DEFAULT_SILENCE_MS; }, [silenceMs]);
   useEffect(() => { resumeDelayMsRef.current = resumeDelayMs ?? DEFAULT_RESUME_DELAY_MS; }, [resumeDelayMs]);
@@ -83,6 +86,8 @@ export function useSpeechRecognition({ onResult, onError, lang = "en-US", silenc
         onResultRef.current(transcript);
       }, silenceMsRef.current);
     };
+
+    r.onaudiostart = () => { onAudioStartRef.current?.(); };
 
     r.onerror = (event: any) => {
       clearDebounce();

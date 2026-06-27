@@ -48,6 +48,7 @@ export default function VoiceTutor() {
   const [showDetails, setShowDetails] = useState(false);
   const [repeatMode, setRepeatMode] = useState(false);
   const [vocabPhase, setVocabPhase] = useState<"topic" | "answer">("topic");
+  const [micReady, setMicReady] = useState(false);
   const [radioStation, setRadioStation] = useState(0);
   const [isRadioPlaying, setIsRadioPlaying] = useState(false);
   const [isRadioLoading, setIsRadioLoading] = useState(false);
@@ -67,6 +68,8 @@ export default function VoiceTutor() {
   useEffect(() => { modeRef.current = mode; }, [mode]);
 
   useEffect(() => { repeatModeRef.current = repeatMode; }, [repeatMode]);
+
+  useEffect(() => { if (phase !== "listening") setMicReady(false); }, [phase]);
 
   // TTS queue for vocabulary mode: each item is spoken in sequence with a delay
   const ttsQueueRef = useRef<Array<{ text: string; delay: number }>>([]);
@@ -293,11 +296,12 @@ export default function VoiceTutor() {
 
   // Vocabulary: short silence (single word) and short resume (no long echo tail on PC)
   const silenceMs = mode === "vocabulary" ? 500 : 1500;
-  const resumeDelayMs = mode === "vocabulary" ? 300 : 2000;
+  const resumeDelayMs = mode === "vocabulary" ? 300 : 800;
 
   const { start, stop, restart, setEcho } = useSpeechRecognition({
     onResult: handleTranscript,
     onError: handleError,
+    onAudioStart: () => setMicReady(true),
     lang: recogLang,
     silenceMs,
     resumeDelayMs,
@@ -372,14 +376,15 @@ export default function VoiceTutor() {
     return () => window.removeEventListener("keydown", onKey);
   }, [phase, mode, handleStart, handleStop]);
 
-  const listeningLabel =
-    mode === "vocabulary"
-      ? vocabPhase === "topic"
-        ? "Listening... (say topic in Finnish)"
-        : "Listening... (translate to German)"
-      : mode === "english"
-      ? "Listening... (speak Finnish)"
-      : "Listening... (speak German)";
+  const listeningLabel = !micReady
+    ? "Starting..."
+    : mode === "vocabulary"
+    ? vocabPhase === "topic"
+      ? "Listening... (say topic in Finnish)"
+      : "Listening... (translate to German)"
+    : mode === "english"
+    ? "Listening... (speak Finnish)"
+    : "Listening... (speak German)";
 
   const processingLabel =
     mode === "vocabulary"
