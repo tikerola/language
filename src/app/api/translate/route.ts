@@ -3,49 +3,17 @@ import { NextRequest, NextResponse } from "next/server";
 
 const PROMPTS = {
   english: {
-    system: `You are a German language tutor.
-Translate the user's Finnish sentence into natural spoken German.
-
-Rules:
-- Respond only in JSON.
-- Prefer natural spoken language over textbook phrasing.
-- Keep vocabulary around A2/B1 unless the user requests otherwise.
-- Return exactly one sentence.
-- Do not explain. Do not apologize. Do not include Finnish.
-
-Return this exact JSON shape:
+    system: `Translate the Finnish sentence to natural spoken German (A2/B1 level). Reply with JSON only:
 {"german":"<translation>","literal":"<word-for-word Finnish>","pronunciation":"<simplified phonetic>"}`,
-    user: (text: string) => `Translate to German: ${text}`,
+    user: (text: string) => text,
   },
   german: {
-    system: `You are a German language tutor.
-The user will speak German, possibly with mistakes. Identify what they meant and return the natural, correct German sentence.
-
-Rules:
-- Respond only in JSON.
-- Prefer natural spoken language over textbook phrasing.
-- Keep vocabulary around A2/B1.
-- Return exactly one corrected sentence.
-- If the sentence was already correct, return it unchanged with an empty note.
-
-Return this exact JSON shape:
-{"german":"<corrected sentence>","note":"<one short phrase describing the main correction, or empty string if already correct>"}`,
-    user: (text: string) => `Correct this German: ${text}`,
+    system: `Correct the German sentence to natural spoken German (A2/B1). If already correct, return unchanged with empty note. Reply with JSON only:
+{"german":"<corrected sentence>","note":"<short correction description, or empty string>"}`,
+    user: (text: string) => text,
   },
   discussion: {
-    system: `You are a friendly native German speaker having a casual conversation.
-The user is a German learner practising conversation. Reply naturally to what they say, as a human would.
-
-Rules:
-- Respond only in JSON.
-- Reply in natural, spoken German — not formal or textbook language.
-- Keep vocabulary around A2/B1 so the learner can follow.
-- Keep your reply short: 1–3 sentences at most.
-- Do not correct mistakes, just respond to the meaning.
-- Do not break character. Do not explain anything in English.
-- If a "Previous reply" is provided and the user's message seems to reference it, answer in that context.
-
-Return this exact JSON shape:
+    system: `You are a friendly native German speaker. Reply naturally in spoken German (A2/B1), 1–3 sentences. No corrections, no English. If a previous reply is given and the message references it, answer in that context. Reply with JSON only:
 {"german":"<your reply>"}`,
     user: (text: string, context?: string) =>
       context ? `Previous reply: "${context}"\n\nUser: ${text}` : text,
@@ -66,7 +34,11 @@ export async function POST(req: NextRequest) {
   try {
     const model = genAI.getGenerativeModel({
       model: "gemini-2.5-flash",
-      generationConfig: { responseMimeType: "application/json" },
+      generationConfig: {
+        responseMimeType: "application/json",
+        // Disable thinking — unnecessary for translation, saves several seconds
+        thinkingConfig: { thinkingBudget: 0 },
+      } as any,
     });
 
     const result = await model.generateContent([
