@@ -73,6 +73,7 @@ export default function VoiceTutor() {
         currentGermanRef.current = data.german;
         if (mode === "discussion") lastDiscussionReplyRef.current = data.german;
         hasRepeatedRef.current = false;
+        setEcho(data.german);
         setPhase("speaking");
         speak(data.german);
       } catch {
@@ -92,7 +93,7 @@ export default function VoiceTutor() {
     setPhase("error");
   }, []);
 
-  const { start, stop, restart } = useSpeechRecognition({
+  const { start, stop, restart, setEcho } = useSpeechRecognition({
     onResult: handleTranscript,
     onError: handleError,
     lang: MODE_LANG[mode],
