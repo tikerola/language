@@ -51,7 +51,6 @@ export default function VoiceTutor() {
   const [radioStation, setRadioStation] = useState(0);
   const [isRadioPlaying, setIsRadioPlaying] = useState(false);
   const [isRadioLoading, setIsRadioLoading] = useState(false);
-  const [radioError, setRadioError] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
 
   const repeatModeRef = useRef(false);
@@ -79,9 +78,9 @@ export default function VoiceTutor() {
     const audio = new Audio();
     audio.preload = "none";
     audio.onwaiting = () => setIsRadioLoading(true);
-    audio.onplaying = () => { setIsRadioLoading(false); setIsRadioPlaying(true); setRadioError(false); };
+    audio.onplaying = () => { setIsRadioLoading(false); setIsRadioPlaying(true); };
     audio.onpause = () => { setIsRadioPlaying(false); setIsRadioLoading(false); };
-    audio.onerror = () => { setIsRadioLoading(false); setIsRadioPlaying(false); setRadioError(true); };
+    audio.onerror = () => { setIsRadioLoading(false); setIsRadioPlaying(false); };
     audioRef.current = audio;
     return () => { audio.pause(); audio.src = ""; };
   }, []);
@@ -97,11 +96,10 @@ export default function VoiceTutor() {
   const playStation = useCallback((idx: number) => {
     const audio = audioRef.current;
     if (!audio) return;
-    setRadioError(false);
     setIsRadioLoading(true);
     setIsRadioPlaying(false);
     audio.src = RADIO_STATIONS[idx].url;
-    audio.play().catch(() => { setIsRadioLoading(false); setRadioError(true); });
+    audio.play().catch(() => { setIsRadioLoading(false); });
   }, []);
 
   const toggleRadio = useCallback(() => {
@@ -437,19 +435,32 @@ export default function VoiceTutor() {
 
           <button
             onClick={toggleRadio}
-            className={`w-24 h-24 rounded-full text-4xl transition-all duration-200 focus:outline-none
+            className={`w-24 h-24 rounded-full flex items-center justify-center transition-all duration-200 focus:outline-none
               ${isRadioPlaying ? "bg-green-600 shadow-lg shadow-green-500/40" : ""}
               ${isRadioLoading ? "bg-yellow-600 animate-pulse shadow-lg shadow-yellow-500/40" : ""}
               ${!isRadioPlaying && !isRadioLoading ? "bg-gray-700 hover:bg-gray-600" : ""}
             `}
           >
-            {isRadioLoading ? "⏳" : isRadioPlaying ? "⏸" : "▶"}
+            {isRadioLoading ? (
+              <svg className="w-9 h-9 animate-spin text-white" viewBox="0 0 24 24" fill="none">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3"/>
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"/>
+              </svg>
+            ) : isRadioPlaying ? (
+              <svg className="w-9 h-9 fill-white" viewBox="0 0 24 24">
+                <rect x="6" y="5" width="4" height="14" rx="1"/>
+                <rect x="14" y="5" width="4" height="14" rx="1"/>
+              </svg>
+            ) : (
+              <svg className="w-9 h-9 fill-white translate-x-0.5" viewBox="0 0 24 24">
+                <path d="M8 5v14l11-7z"/>
+              </svg>
+            )}
           </button>
 
           <p className="mt-5 text-xs tracking-widest uppercase h-4">
             {isRadioPlaying && <span className="text-green-400 animate-pulse">● Live</span>}
             {isRadioLoading && <span className="text-yellow-500">Loading...</span>}
-            {radioError && <span className="text-red-400">Stream unavailable</span>}
           </p>
 
           {/* Station selector */}
