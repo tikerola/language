@@ -5,7 +5,7 @@ import { useSpeechRecognition } from "@/hooks/useSpeechRecognition";
 import { useSpeechSynthesis } from "@/hooks/useSpeechSynthesis";
 
 type Phase = "idle" | "listening" | "processing" | "speaking" | "error";
-type Mode = "english" | "german" | "discussion" | "vocabulary";
+type Mode = "english" | "german" | "discussion" | "vocabulary" | "radio";
 
 type Result =
   | { mode: "english"; german: string; literal: string; pronunciation: string }
@@ -18,7 +18,26 @@ const MODE_LANG: Record<Mode, string> = {
   german: "de-DE",
   discussion: "de-DE",
   vocabulary: "fi-FI",
+  radio: "de-DE",
 };
+
+const RADIO_STATIONS = [
+  {
+    name: "Deutschlandfunk",
+    desc: "Nachrichten · Kultur · Gespräche",
+    url: "https://st01.sslstream.dlf.de/dlf/01/128/mp3/stream.mp3",
+  },
+  {
+    name: "WDR 5",
+    desc: "Wissen · Gespräche · Kultur",
+    url: "https://wdr-wdr5-live.icecastssl.wdr.de/wdr/wdr5/live/mp3/128/stream.mp3",
+  },
+  {
+    name: "NDR Info",
+    desc: "Nachrichten · Berichte",
+    url: "https://icecast.ndr.de/ndr/ndrinfo/hamburg/mp3/128/stream.mp3",
+  },
+] as const;
 
 export default function VoiceTutor() {
   const [phase, setPhase] = useState<Phase>("idle");
@@ -29,6 +48,11 @@ export default function VoiceTutor() {
   const [showDetails, setShowDetails] = useState(false);
   const [repeatMode, setRepeatMode] = useState(false);
   const [vocabPhase, setVocabPhase] = useState<"topic" | "answer">("topic");
+  const [radioStation, setRadioStation] = useState(0);
+  const [isRadioPlaying, setIsRadioPlaying] = useState(false);
+  const [isRadioLoading, setIsRadioLoading] = useState(false);
+  const [radioError, setRadioError] = useState(false);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
 
   const repeatModeRef = useRef(false);
   const hasRepeatedRef = useRef(false);
@@ -49,6 +73,54 @@ export default function VoiceTutor() {
   const ttsQueueRef = useRef<Array<{ text: string; delay: number }>>([]);
 
   const clearTTSQueue = useCallback(() => { ttsQueueRef.current = []; }, []);
+
+  // Radio audio element lifecycle
+  useEffect(() => {
+    const audio = new Audio();
+    audio.preload = "none";
+    audio.onwaiting = () => setIsRadioLoading(true);
+    audio.onplaying = () => { setIsRadioLoading(false); setIsRadioPlaying(true); setRadioError(false); };
+    audio.onpause = () => { setIsRadioPlaying(false); setIsRadioLoading(false); };
+    audio.onerror = () => { setIsRadioLoading(false); setIsRadioPlaying(false); setRadioError(true); };
+    audioRef.current = audio;
+    return () => { audio.pause(); audio.src = ""; };
+  }, []);
+
+  // Stop radio when leaving radio mode
+  useEffect(() => {
+    if (mode !== "radio" && audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.src = "";
+    }
+  }, [mode]);
+
+  const playStation = useCallback((idx: number) => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    setRadioError(false);
+    setIsRadioLoading(true);
+    setIsRadioPlaying(false);
+    audio.src = RADIO_STATIONS[idx].url;
+    audio.play().catch(() => { setIsRadioLoading(false); setRadioError(true); });
+  }, []);
+
+  const toggleRadio = useCallback(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    if (isRadioPlaying || isRadioLoading) {
+      audio.pause();
+      audio.src = "";
+    } else {
+      playStation(radioStation);
+    }
+  }, [isRadioPlaying, isRadioLoading, radioStation, playStation]);
+
+  const changeStation = useCallback((idx: number) => {
+    setRadioStation(idx);
+    if (isRadioPlaying || isRadioLoading) {
+      playStation(idx);
+    }
+  }, [isRadioPlaying, isRadioLoading, playStation]);
 
   const handleTTSEnd = useCallback(() => {
     // Vocabulary uses an explicit queue so the order is:
@@ -276,6 +348,10 @@ export default function VoiceTutor() {
         setPhase("idle");
       }
       clearTTSQueue();
+      if (next !== "radio" && audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current.src = "";
+      }
       setMode(next);
       setSpoken("");
       setResult(null);
@@ -285,10 +361,10 @@ export default function VoiceTutor() {
     [phase, stop, cancel, clearTTSQueue, resetVocabState]
   );
 
-  // Space bar to start/stop
+  // Space bar to start/stop (not in radio mode)
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.code === "Space" && e.target === document.body) {
+      if (e.code === "Space" && e.target === document.body && mode !== "radio") {
         e.preventDefault();
         if (phase === "idle" || phase === "error") handleStart();
         else handleStop();
@@ -296,7 +372,7 @@ export default function VoiceTutor() {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [phase, handleStart, handleStop]);
+  }, [phase, mode, handleStart, handleStop]);
 
   const listeningLabel =
     mode === "vocabulary"
@@ -337,6 +413,7 @@ export default function VoiceTutor() {
           ["german", "DE correction"],
           ["discussion", "DE chat"],
           ["vocabulary", "Vocabulary"],
+          ["radio", "Radio"],
         ] as [Mode, string][]).map(([m, label]) => (
           <button
             key={m}
@@ -352,107 +429,149 @@ export default function VoiceTutor() {
         ))}
       </div>
 
-      {/* Mic button */}
-      <button
-        onClick={isActive ? handleStop : handleStart}
-        className={`w-24 h-24 rounded-full text-3xl transition-all duration-200 focus:outline-none
-          ${phase === "listening" ? "bg-red-500 animate-pulse shadow-lg shadow-red-500/40" : ""}
-          ${phase === "processing" ? "bg-yellow-500 shadow-lg shadow-yellow-500/40" : ""}
-          ${phase === "speaking" ? "bg-blue-500 shadow-lg shadow-blue-500/40" : ""}
-          ${phase === "idle" ? "bg-gray-700 hover:bg-gray-600" : ""}
-          ${phase === "error" ? "bg-gray-700" : ""}
-        `}
-      >
-        {phase === "processing" ? "⏳" : phase === "speaking" ? "🔊" : "🎙️"}
-      </button>
+      {mode === "radio" ? (
+        /* Radio player */
+        <div className="flex flex-col items-center">
+          <p className="text-white text-lg font-semibold">{RADIO_STATIONS[radioStation].name}</p>
+          <p className="text-gray-500 text-xs mt-1 mb-8">{RADIO_STATIONS[radioStation].desc}</p>
 
-      {/* Status */}
-      <p className="mt-6 text-sm text-gray-400 tracking-widest uppercase">
-        {phaseLabel[phase]}
-      </p>
+          <button
+            onClick={toggleRadio}
+            className={`w-24 h-24 rounded-full text-4xl transition-all duration-200 focus:outline-none
+              ${isRadioPlaying ? "bg-green-600 shadow-lg shadow-green-500/40" : ""}
+              ${isRadioLoading ? "bg-yellow-600 animate-pulse shadow-lg shadow-yellow-500/40" : ""}
+              ${!isRadioPlaying && !isRadioLoading ? "bg-gray-700 hover:bg-gray-600" : ""}
+            `}
+          >
+            {isRadioLoading ? "⏳" : isRadioPlaying ? "⏸" : "▶"}
+          </button>
 
-      {/* Transcript */}
-      {spoken && (
-        <div className="mt-10 w-full max-w-md">
-          <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">You said</p>
-          <p className="text-gray-300 text-lg">{spoken}</p>
-        </div>
-      )}
-
-      {/* Result — translation / correction / discussion */}
-      {result && result.mode !== "vocabulary" && (
-        <div className="mt-6 w-full max-w-md">
-          <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">
-            {result.mode === "discussion"
-              ? "Reply"
-              : result.mode === "german" && result.note
-              ? "Correction"
-              : "German"}
+          <p className="mt-5 text-xs tracking-widest uppercase h-4">
+            {isRadioPlaying && <span className="text-green-400 animate-pulse">● Live</span>}
+            {isRadioLoading && <span className="text-yellow-500">Loading...</span>}
+            {radioError && <span className="text-red-400">Stream unavailable</span>}
           </p>
-          <p className="text-white text-2xl font-medium">{result.german}</p>
 
-          {result.mode === "english" && (
-            <>
+          {/* Station selector */}
+          <div className="flex gap-2 mt-10">
+            {RADIO_STATIONS.map((s, i) => (
               <button
-                onClick={() => setShowDetails((v) => !v)}
-                className="mt-3 text-xs text-gray-500 hover:text-gray-300 underline"
+                key={i}
+                onClick={() => changeStation(i)}
+                className={`px-3 py-1 rounded-full text-xs font-medium transition-colors
+                  ${radioStation === i
+                    ? "bg-gray-200 text-gray-900"
+                    : "bg-gray-800 text-gray-400 hover:text-gray-200"
+                  }`}
               >
-                {showDetails ? "Hide details" : "Show details"}
+                {s.name}
               </button>
-              {showDetails && (
-                <div className="mt-3 space-y-2 text-sm text-gray-400">
-                  <p><span className="text-gray-500">Literal: </span>{result.literal}</p>
-                  <p><span className="text-gray-500">Pronunciation: </span>{result.pronunciation}</p>
-                </div>
-              )}
-            </>
-          )}
-
-          {result.mode === "german" && result.note && (
-            <p className="mt-3 text-sm text-gray-400">
-              <span className="text-gray-500">Note: </span>{result.note}
-            </p>
-          )}
+            ))}
+          </div>
         </div>
-      )}
+      ) : (
+        <>
+          {/* Mic button */}
+          <button
+            onClick={isActive ? handleStop : handleStart}
+            className={`w-24 h-24 rounded-full text-3xl transition-all duration-200 focus:outline-none
+              ${phase === "listening" ? "bg-red-500 animate-pulse shadow-lg shadow-red-500/40" : ""}
+              ${phase === "processing" ? "bg-yellow-500 shadow-lg shadow-yellow-500/40" : ""}
+              ${phase === "speaking" ? "bg-blue-500 shadow-lg shadow-blue-500/40" : ""}
+              ${phase === "idle" ? "bg-gray-700 hover:bg-gray-600" : ""}
+              ${phase === "error" ? "bg-gray-700" : ""}
+            `}
+          >
+            {phase === "processing" ? "⏳" : phase === "speaking" ? "🔊" : "🎙️"}
+          </button>
 
-      {/* Result — vocabulary */}
-      {result?.mode === "vocabulary" && (
-        <div className="mt-6 w-full max-w-md">
-          {/* Feedback from last answer */}
-          {result.correct !== null && (
-            <div className="mb-5 pb-4 border-b border-gray-800">
-              <p className={`text-sm font-semibold uppercase tracking-widest ${result.correct ? "text-green-500" : "text-red-500"}`}>
-                {result.correct ? "Richtig!" : "Falsch"}
+          {/* Status */}
+          <p className="mt-6 text-sm text-gray-400 tracking-widest uppercase">
+            {phaseLabel[phase]}
+          </p>
+
+          {/* Transcript */}
+          {spoken && (
+            <div className="mt-10 w-full max-w-md">
+              <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">You said</p>
+              <p className="text-gray-300 text-lg">{spoken}</p>
+            </div>
+          )}
+
+          {/* Result — translation / correction / discussion */}
+          {result && result.mode !== "vocabulary" && (
+            <div className="mt-6 w-full max-w-md">
+              <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">
+                {result.mode === "discussion"
+                  ? "Reply"
+                  : result.mode === "german" && result.note
+                  ? "Correction"
+                  : "German"}
               </p>
-              {result.correctWord && (
-                <p className={`text-3xl font-bold mt-1 ${result.correct ? "text-green-300" : "text-white"}`}>
-                  {result.correctWord}
+              <p className="text-white text-2xl font-medium">{result.german}</p>
+
+              {result.mode === "english" && (
+                <>
+                  <button
+                    onClick={() => setShowDetails((v) => !v)}
+                    className="mt-3 text-xs text-gray-500 hover:text-gray-300 underline"
+                  >
+                    {showDetails ? "Hide details" : "Show details"}
+                  </button>
+                  {showDetails && (
+                    <div className="mt-3 space-y-2 text-sm text-gray-400">
+                      <p><span className="text-gray-500">Literal: </span>{result.literal}</p>
+                      <p><span className="text-gray-500">Pronunciation: </span>{result.pronunciation}</p>
+                    </div>
+                  )}
+                </>
+              )}
+
+              {result.mode === "german" && result.note && (
+                <p className="mt-3 text-sm text-gray-400">
+                  <span className="text-gray-500">Note: </span>{result.note}
                 </p>
               )}
             </div>
           )}
-          {/* Next word to translate */}
-          <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">
-            Translate to German
-          </p>
-          <p className="text-white text-4xl font-bold tracking-wide">{result.word}</p>
-        </div>
+
+          {/* Result — vocabulary */}
+          {result?.mode === "vocabulary" && (
+            <div className="mt-6 w-full max-w-md">
+              {result.correct !== null && (
+                <div className="mb-5 pb-4 border-b border-gray-800">
+                  <p className={`text-sm font-semibold uppercase tracking-widest ${result.correct ? "text-green-500" : "text-red-500"}`}>
+                    {result.correct ? "Richtig!" : "Falsch"}
+                  </p>
+                  {result.correctWord && (
+                    <p className={`text-3xl font-bold mt-1 ${result.correct ? "text-green-300" : "text-white"}`}>
+                      {result.correctWord}
+                    </p>
+                  )}
+                </div>
+              )}
+              <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">
+                Translate to German
+              </p>
+              <p className="text-white text-4xl font-bold tracking-wide">{result.word}</p>
+            </div>
+          )}
+
+          {/* Repeat mode toggle */}
+          <button
+            onClick={() => setRepeatMode((v) => !v)}
+            className={`mt-12 px-4 py-1.5 rounded-full text-xs font-medium tracking-wide transition-colors
+              ${repeatMode
+                ? "bg-blue-600 text-white"
+                : "bg-gray-800 text-gray-500 hover:text-gray-300"
+              }`}
+          >
+            Repeat ×2
+          </button>
+
+          <p className="mt-4 text-xs text-gray-700">Space to start / stop</p>
+        </>
       )}
-
-      {/* Repeat mode toggle */}
-      <button
-        onClick={() => setRepeatMode((v) => !v)}
-        className={`mt-12 px-4 py-1.5 rounded-full text-xs font-medium tracking-wide transition-colors
-          ${repeatMode
-            ? "bg-blue-600 text-white"
-            : "bg-gray-800 text-gray-500 hover:text-gray-300"
-          }`}
-      >
-        Repeat ×2
-      </button>
-
-      <p className="mt-4 text-xs text-gray-700">Space to start / stop</p>
     </div>
   );
 }
