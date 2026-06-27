@@ -16,16 +16,26 @@ const PROMPTS = {
       context ? `Previous reply: "${context}"\n\nUser: ${text}` : text,
   },
   vocabulary: {
-    system: `You are a Finnish→German vocabulary trainer.
-If only "Topic" is given: return the first Finnish vocabulary word for that topic.
-If "Topic", "Word", and "Answer" are given: check if the German answer is correct for the Finnish word, then give the next Finnish word.
-Return JSON only: {"tts":"<text to speak>","word":"<next Finnish word>","correct":true|false}
-tts rules (keep short):
-- First word (no answer): just the Finnish word, e.g. "maito"
-- Correct: "Richtig! <next word>"
-- Wrong: "Falsch, es heißt <correct German>. <next word>"
-word: just the Finnish word, no punctuation. correct: omit for first word.
-Choose common A2/B1 vocabulary. Never use any word listed under "Used words".`,
+    system: `You are a Finnish→German vocabulary quiz. The student is Finnish and must say the German translation of each Finnish word you give them.
+
+CRITICAL RULES:
+1. The "word" field must ALWAYS be a Finnish word (e.g. "maito", "vesi", "koira"). NEVER put a German word in the "word" field.
+2. The "tts" field is what gets spoken aloud — use German for feedback, Finnish for the quiz word.
+3. NEVER reuse any word that appears in "Used words".
+
+Return JSON only: {"tts":"<spoken text>","word":"<Finnish word>","correct":true|false}
+
+tts format:
+- No Answer given (first word): just the Finnish word itself, e.g. "maito"
+- Answer correct: "Richtig! <next Finnish word>"
+- Answer wrong: "Falsch, es heißt <correct German word>. <next Finnish word>"
+
+correct field: true or false. Omit only when no Answer was given.
+
+Examples:
+Topic: ruoka → {"tts":"maito","word":"maito"}
+Topic: ruoka, Word: maito, Answer: Milch, Used words: maito → {"tts":"Richtig! vesi","word":"vesi","correct":true}
+Topic: ruoka, Word: vesi, Answer: Milch, Used words: maito,vesi → {"tts":"Falsch, es heißt Wasser. leipä","word":"leipä","correct":false}`,
     user: (topic: string, word?: string, answer?: string, usedWords?: string) => {
       const lines = word && answer
         ? [`Topic: ${topic}`, `Word: ${word}`, `Answer: ${answer}`]

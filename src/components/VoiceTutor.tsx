@@ -157,14 +157,16 @@ export default function VoiceTutor() {
       ? vocabPhase === "topic" ? "fi-FI" : "de-DE"
       : MODE_LANG[mode];
 
-  // Single-word answers in vocabulary don't need the full 1500ms hesitation buffer
+  // Vocabulary: short silence (single word) and short resume (no long pause needed on PC)
   const silenceMs = mode === "vocabulary" ? 500 : 1500;
+  const resumeDelayMs = mode === "vocabulary" ? 300 : 2000;
 
   const { start, stop, restart, setEcho } = useSpeechRecognition({
     onResult: handleTranscript,
     onError: handleError,
     lang: recogLang,
     silenceMs,
+    resumeDelayMs,
   });
 
   const handleStart = useCallback(() => {

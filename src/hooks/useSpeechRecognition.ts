@@ -7,10 +7,11 @@ interface Options {
   onError?: (error: string) => void;
   lang?: string;
   silenceMs?: number;
+  resumeDelayMs?: number;
 }
 
 const DEFAULT_SILENCE_MS = 1500;
-const RESUME_DELAY_MS = 2000;
+const DEFAULT_RESUME_DELAY_MS = 2000;
 
 function isEcho(transcript: string, ttsText: string): boolean {
   if (!ttsText) return false;
@@ -20,12 +21,13 @@ function isEcho(transcript: string, ttsText: string): boolean {
   return overlap / a.length > 0.6;
 }
 
-export function useSpeechRecognition({ onResult, onError, lang = "en-US", silenceMs }: Options) {
+export function useSpeechRecognition({ onResult, onError, lang = "en-US", silenceMs, resumeDelayMs }: Options) {
   const recognitionRef = useRef<any>(null);
   const onResultRef = useRef(onResult);
   const onErrorRef = useRef(onError);
   const langRef = useRef(lang);
   const silenceMsRef = useRef(silenceMs ?? DEFAULT_SILENCE_MS);
+  const resumeDelayMsRef = useRef(resumeDelayMs ?? DEFAULT_RESUME_DELAY_MS);
 
   const activeRef = useRef(false);
   const runningRef = useRef(false);
@@ -35,6 +37,7 @@ export function useSpeechRecognition({ onResult, onError, lang = "en-US", silenc
   useEffect(() => { onErrorRef.current = onError; });
   useEffect(() => { langRef.current = lang; }, [lang]);
   useEffect(() => { silenceMsRef.current = silenceMs ?? DEFAULT_SILENCE_MS; }, [silenceMs]);
+  useEffect(() => { resumeDelayMsRef.current = resumeDelayMs ?? DEFAULT_RESUME_DELAY_MS; }, [resumeDelayMs]);
 
   const build = useCallback((): any | null => {
     const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
@@ -144,7 +147,7 @@ export function useSpeechRecognition({ onResult, onError, lang = "en-US", silenc
       activeRef.current = true;
       runningRef.current = true;
       try { fresh.start(); } catch { runningRef.current = false; }
-    }, RESUME_DELAY_MS);
+    }, resumeDelayMsRef.current);
   }, [build]);
 
   const setEcho = useCallback((text: string) => {
