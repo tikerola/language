@@ -5,17 +5,19 @@ import { useSpeechRecognition } from "@/hooks/useSpeechRecognition";
 import { useSpeechSynthesis } from "@/hooks/useSpeechSynthesis";
 
 type Phase = "idle" | "listening" | "processing" | "speaking" | "error";
-type Mode = "english" | "german" | "discussion";
+type Mode = "english" | "german" | "discussion" | "vocabulary";
 
 type Result =
   | { mode: "english"; german: string; literal: string; pronunciation: string }
   | { mode: "german"; german: string; note: string }
-  | { mode: "discussion"; german: string };
+  | { mode: "discussion"; german: string }
+  | { mode: "vocabulary"; word: string; correct: boolean | null };
 
 const MODE_LANG: Record<Mode, string> = {
   english: "fi-FI",
   german: "de-DE",
   discussion: "de-DE",
+  vocabulary: "fi-FI",
 };
 
 export default function VoiceTutor() {
@@ -26,11 +28,14 @@ export default function VoiceTutor() {
   const [errorMsg, setErrorMsg] = useState("");
   const [showDetails, setShowDetails] = useState(false);
   const [repeatMode, setRepeatMode] = useState(false);
+  const [vocabPhase, setVocabPhase] = useState<"topic" | "answer">("topic");
 
   const repeatModeRef = useRef(false);
   const hasRepeatedRef = useRef(false);
   const currentGermanRef = useRef("");
   const lastDiscussionReplyRef = useRef("");
+  const vocabTopicRef = useRef("");
+  const vocabWordRef = useRef("");
 
   useEffect(() => { repeatModeRef.current = repeatMode; }, [repeatMode]);
 
@@ -51,6 +56,55 @@ export default function VoiceTutor() {
     async (transcript: string) => {
       setSpoken(transcript);
       setPhase("processing");
+
+      if (mode === "vocabulary") {
+        try {
+          const isTopicPhase = !vocabTopicRef.current;
+          let bodyData: Record<string, string>;
+
+          if (isTopicPhase) {
+            vocabTopicRef.current = transcript;
+            bodyData = { mode: "vocabulary", topic: transcript };
+          } else {
+            bodyData = {
+              mode: "vocabulary",
+              topic: vocabTopicRef.current,
+              word: vocabWordRef.current,
+              answer: transcript,
+            };
+          }
+
+          const res = await fetch("/api/translate", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(bodyData),
+          });
+
+          if (!res.ok) throw new Error("Failed");
+          const data = await res.json();
+
+          vocabWordRef.current = data.word;
+          setVocabPhase("answer");
+          setResult({
+            mode: "vocabulary",
+            word: data.word,
+            correct: isTopicPhase ? null : data.correct ?? null,
+          });
+          currentGermanRef.current = data.tts;
+          hasRepeatedRef.current = false;
+          setEcho(data.tts);
+          setPhase("speaking");
+          speak(data.tts);
+        } catch {
+          setErrorMsg("Error. Listening again...");
+          setPhase("error");
+          setTimeout(() => {
+            setPhase("listening");
+            restart();
+          }, 2000);
+        }
+        return;
+      }
 
       try {
         const res = await fetch("/api/translate", {
@@ -93,24 +147,44 @@ export default function VoiceTutor() {
     setPhase("error");
   }, []);
 
+  // Vocabulary switches recognition language: Finnish for topic input, German for answers
+  const recogLang =
+    mode === "vocabulary"
+      ? vocabPhase === "topic" ? "fi-FI" : "de-DE"
+      : MODE_LANG[mode];
+
   const { start, stop, restart, setEcho } = useSpeechRecognition({
     onResult: handleTranscript,
     onError: handleError,
-    lang: MODE_LANG[mode],
+    lang: recogLang,
   });
 
   const handleStart = useCallback(() => {
-    setPhase("listening");
     setSpoken("");
     setResult(null);
-    start();
-  }, [start]);
+    if (mode === "vocabulary") {
+      setVocabPhase("topic");
+      vocabTopicRef.current = "";
+      vocabWordRef.current = "";
+      setPhase("speaking");
+      // Speak intro; recognition starts after TTS ends via handleTTSEnd → restart()
+      speak("Welches Thema möchtest du wählen? Sag es auf Finnisch");
+    } else {
+      setPhase("listening");
+      start();
+    }
+  }, [start, speak, mode]);
 
   const handleStop = useCallback(() => {
     stop();
     cancel();
     setPhase("idle");
-  }, [stop, cancel]);
+    if (mode === "vocabulary") {
+      setVocabPhase("topic");
+      vocabTopicRef.current = "";
+      vocabWordRef.current = "";
+    }
+  }, [stop, cancel, mode]);
 
   const handleModeChange = useCallback(
     (next: Mode) => {
@@ -123,6 +197,9 @@ export default function VoiceTutor() {
       setSpoken("");
       setResult(null);
       lastDiscussionReplyRef.current = "";
+      setVocabPhase("topic");
+      vocabTopicRef.current = "";
+      vocabWordRef.current = "";
     },
     [phase, stop, cancel]
   );
@@ -140,10 +217,26 @@ export default function VoiceTutor() {
     return () => window.removeEventListener("keydown", onKey);
   }, [phase, handleStart, handleStop]);
 
+  const listeningLabel =
+    mode === "vocabulary"
+      ? vocabPhase === "topic"
+        ? "Listening... (say topic in Finnish)"
+        : "Listening... (translate to German)"
+      : mode === "english"
+      ? "Listening... (speak Finnish)"
+      : "Listening... (speak German)";
+
+  const processingLabel =
+    mode === "vocabulary"
+      ? vocabTopicRef.current ? "Checking..." : "Getting first word..."
+      : mode === "english" ? "Translating..."
+      : mode === "german" ? "Checking..."
+      : "Thinking...";
+
   const phaseLabel: Record<Phase, string> = {
     idle: "Press Start or Space",
-    listening: mode === "english" ? "Listening... (speak Finnish)" : "Listening... (speak German)",
-    processing: mode === "english" ? "Translating..." : mode === "german" ? "Checking..." : "Thinking...",
+    listening: listeningLabel,
+    processing: processingLabel,
     speaking: "Speaking...",
     error: errorMsg || "Error",
   };
@@ -157,11 +250,12 @@ export default function VoiceTutor() {
       </h1>
 
       {/* Mode selector */}
-      <div className="flex gap-2 mb-10">
+      <div className="flex flex-wrap gap-2 mb-10 justify-center">
         {([
           ["english", "FI → DE"],
           ["german", "DE correction"],
           ["discussion", "DE chat"],
+          ["vocabulary", "Vocabulary"],
         ] as [Mode, string][]).map(([m, label]) => (
           <button
             key={m}
@@ -204,11 +298,15 @@ export default function VoiceTutor() {
         </div>
       )}
 
-      {/* Result */}
-      {result && (
+      {/* Result — translation / correction / discussion */}
+      {result && result.mode !== "vocabulary" && (
         <div className="mt-6 w-full max-w-md">
           <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">
-            {result.mode === "discussion" ? "Reply" : result.mode === "german" && result.note ? "Correction" : "German"}
+            {result.mode === "discussion"
+              ? "Reply"
+              : result.mode === "german" && result.note
+              ? "Correction"
+              : "German"}
           </p>
           <p className="text-white text-2xl font-medium">{result.german}</p>
 
@@ -232,6 +330,21 @@ export default function VoiceTutor() {
           {result.mode === "german" && result.note && (
             <p className="mt-3 text-sm text-gray-400">
               <span className="text-gray-500">Note: </span>{result.note}
+            </p>
+          )}
+        </div>
+      )}
+
+      {/* Result — vocabulary */}
+      {result?.mode === "vocabulary" && (
+        <div className="mt-6 w-full max-w-md">
+          <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">
+            Translate to German
+          </p>
+          <p className="text-white text-4xl font-bold tracking-wide">{result.word}</p>
+          {result.correct !== null && (
+            <p className={`mt-3 text-sm font-medium ${result.correct ? "text-green-400" : "text-red-400"}`}>
+              {result.correct ? "Richtig!" : "Falsch"}
             </p>
           )}
         </div>
