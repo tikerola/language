@@ -12,7 +12,7 @@ interface Options {
 const SILENCE_MS = 1500;
 
 export function useSpeechRecognition({ onResult, onError, lang = "en-US" }: Options) {
-  const recognitionRef = useRef<SpeechRecognition | null>(null);
+  const recognitionRef = useRef<any>(null);
   const onResultRef = useRef(onResult);
   const onErrorRef = useRef(onError);
   const langRef = useRef(lang);
@@ -21,14 +21,14 @@ export function useSpeechRecognition({ onResult, onError, lang = "en-US" }: Opti
   useEffect(() => { onErrorRef.current = onError; });
   useEffect(() => { langRef.current = lang; }, [lang]);
 
-  const build = useCallback((): SpeechRecognition | null => {
+  const build = useCallback((): any | null => {
     const SR = window.SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SR) {
       onErrorRef.current?.("Speech recognition not supported. Use Chrome.");
       return null;
     }
 
-    const r: SpeechRecognition = new SR();
+    const r = new SR();
     r.lang = langRef.current;
     r.continuous = true;
     r.interimResults = false;
