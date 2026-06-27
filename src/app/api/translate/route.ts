@@ -18,29 +18,38 @@ const PROMPTS = {
   vocabulary: {
     system: `You are a Finnish→German vocabulary quiz. The student is Finnish and must say the German translation of each Finnish word you give them.
 
-CRITICAL RULES:
-1. The "word" field must ALWAYS be a Finnish word (e.g. "maito", "vesi", "koira"). NEVER put a German word in the "word" field.
-2. The "tts" field is what gets spoken aloud — use German for feedback, Finnish for the quiz word.
-3. NEVER reuse any word that appears in "Used words".
+RULES:
+1. "word" field: ALWAYS a Finnish word (e.g. "maito", "vesi"). NEVER German.
+2. "correctWord" field: the correct German translation of the Word that was answered. Empty string on first word.
+3. "tts" field: spoken aloud — German for feedback, Finnish for the quiz word.
+4. NEVER return a word from "Used words". Check this list every time before choosing.
+5. NEVER use the Topic word itself as a vocabulary word. The Topic is a category, not a quiz word.
 
-Return JSON only: {"tts":"<spoken text>","word":"<Finnish word>","correct":true|false}
+Return JSON only:
+{"tts":"<spoken>","word":"<next Finnish word>","correct":true|false,"correctWord":"<German>"}
 
 tts format:
-- No Answer given (first word): just the Finnish word itself, e.g. "maito"
-- Answer correct: "Richtig! <next Finnish word>"
-- Answer wrong: "Falsch, es heißt <correct German word>. <next Finnish word>"
+- No Answer (first word): just the Finnish word, e.g. "maito"
+- Correct: "Richtig! <next Finnish word>"
+- Wrong: "Falsch, es heißt <correct German>. <next Finnish word>"
 
-correct field: true or false. Omit only when no Answer was given.
+correct: true or false. Omit only when no Answer given.
+Evaluation rules: capitalization never matters ("schwimmen" = "Schwimmen"). Missing or wrong article is fine. Accept clear synonyms and minor speech-recognition typos. If the answer is the same word as the correct German translation, it is ALWAYS correct.
 
 Examples:
-Topic: ruoka → {"tts":"maito","word":"maito"}
-Topic: ruoka, Word: maito, Answer: Milch, Used words: maito → {"tts":"Richtig! vesi","word":"vesi","correct":true}
-Topic: ruoka, Word: vesi, Answer: Milch, Used words: maito,vesi → {"tts":"Falsch, es heißt Wasser. leipä","word":"leipä","correct":false}`,
+Topic: ruoka
+→ {"tts":"maito","word":"maito","correctWord":""}
+
+Topic: ruoka, Word: maito, Answer: Milch, Used words: maito
+→ {"tts":"Richtig! vesi","word":"vesi","correct":true,"correctWord":"Milch"}
+
+Topic: ruoka, Word: vesi, Answer: Milch, Used words: maito,vesi
+→ {"tts":"Falsch, es heißt Wasser. leipä","word":"leipä","correct":false,"correctWord":"Wasser"}`,
     user: (topic: string, word?: string, answer?: string, usedWords?: string) => {
       const lines = word && answer
         ? [`Topic: ${topic}`, `Word: ${word}`, `Answer: ${answer}`]
-        : [`Topic: ${topic}`];
-      if (usedWords) lines.push(`Used words: ${usedWords}`);
+        : [`Topic: ${topic} (this is the category only — do NOT use "${topic}" as the quiz word)`];
+      if (usedWords) lines.push(`Used words (never repeat any of these): ${usedWords}`);
       return lines.join("\n");
     },
   },
@@ -68,12 +77,29 @@ export async function POST(req: NextRequest) {
       if (!topic?.trim()) {
         return NextResponse.json({ error: "No topic provided" }, { status: 400 });
       }
+
       const prompt = PROMPTS.vocabulary;
-      const result = await makeModel().generateContent([
-        { text: prompt.system },
-        { text: prompt.user(topic.trim(), word?.trim(), answer?.trim(), usedWords?.trim()) },
-      ]);
-      return NextResponse.json(JSON.parse(result.response.text()));
+      const userMsg = prompt.user(topic.trim(), word?.trim(), answer?.trim(), usedWords?.trim());
+
+      let parsed = JSON.parse(
+        (await makeModel().generateContent([{ text: prompt.system }, { text: userMsg }]))
+          .response.text()
+      );
+
+      // Safety net: if the model returned a used word, retry once with an explicit override
+      if (usedWords?.trim()) {
+        const used = new Set(usedWords.split(",").map((w: string) => w.trim().toLowerCase()));
+        if (parsed.word && used.has(parsed.word.toLowerCase())) {
+          const retryMsg = userMsg +
+            `\n\nYou returned "${parsed.word}" which is already in the Used words list. You MUST choose a different Finnish word not in that list.`;
+          parsed = JSON.parse(
+            (await makeModel().generateContent([{ text: prompt.system }, { text: retryMsg }]))
+              .response.text()
+          );
+        }
+      }
+
+      return NextResponse.json(parsed);
     }
 
     const { text, context } = body;

@@ -11,7 +11,7 @@ type Result =
   | { mode: "english"; german: string; literal: string; pronunciation: string }
   | { mode: "german"; german: string; note: string }
   | { mode: "discussion"; german: string }
-  | { mode: "vocabulary"; word: string; correct: boolean | null };
+  | { mode: "vocabulary"; word: string; correct: boolean | null; correctWord: string };
 
 const MODE_LANG: Record<Mode, string> = {
   english: "fi-FI",
@@ -37,10 +37,40 @@ export default function VoiceTutor() {
   const vocabTopicRef = useRef("");
   const vocabWordRef = useRef("");
   const vocabUsedWordsRef = useRef<string[]>([]);
+  const vocabCorrectWordRef = useRef("");
+
+  // Tracks current mode inside handleTTSEnd (which has [] deps)
+  const modeRef = useRef<Mode>("english");
+  useEffect(() => { modeRef.current = mode; }, [mode]);
 
   useEffect(() => { repeatModeRef.current = repeatMode; }, [repeatMode]);
 
+  // TTS queue for vocabulary mode: each item is spoken in sequence with a delay
+  const ttsQueueRef = useRef<Array<{ text: string; delay: number }>>([]);
+
+  const clearTTSQueue = useCallback(() => { ttsQueueRef.current = []; }, []);
+
   const handleTTSEnd = useCallback(() => {
+    // Vocabulary uses an explicit queue so the order is:
+    // feedback → (pause) → correctWord → (pause) → next Finnish word → listening
+    // Skip empty strings — speak("") on Chrome never fires onend and freezes the app
+    while (ttsQueueRef.current.length > 0 && !ttsQueueRef.current[0].text) {
+      ttsQueueRef.current.shift();
+    }
+    if (ttsQueueRef.current.length > 0) {
+      const { text, delay } = ttsQueueRef.current.shift()!;
+      setTimeout(() => speak(text), delay);
+      return;
+    }
+
+    if (modeRef.current === "vocabulary") {
+      // Queue consumed — go straight to listening (repeat is already embedded in the queue)
+      setPhase("listening");
+      restart();
+      return;
+    }
+
+    // Non-vocabulary modes: original repeat-x2 logic
     if (repeatModeRef.current && !hasRepeatedRef.current) {
       hasRepeatedRef.current = true;
       setTimeout(() => speak(currentGermanRef.current), 2000);
@@ -86,19 +116,53 @@ export default function VoiceTutor() {
           if (!res.ok) throw new Error("Failed");
           const data = await res.json();
 
+          // Client-side sanity check: if the user's answer matches the AI's stated correct word
+          // (ignoring case and German articles), trust the match over the AI's evaluation.
+          // This catches the no-thinking evaluation bug where the model says "WRONG, correct is X"
+          // but X is exactly what the user said.
+          if (!isTopicPhase && data.correctWord) {
+            const norm = (s: string) =>
+              s.trim().toLowerCase().replace(/^(der|die|das|ein|eine)\s+/, "");
+            if (norm(transcript) === norm(data.correctWord)) {
+              data.correct = true;
+            }
+          }
+
           vocabWordRef.current = data.word;
           vocabUsedWordsRef.current = [...vocabUsedWordsRef.current, data.word];
+          vocabCorrectWordRef.current = data.correctWord || "";
           setVocabPhase("answer");
           setResult({
             mode: "vocabulary",
             word: data.word,
             correct: isTopicPhase ? null : data.correct ?? null,
+            correctWord: data.correctWord || "",
           });
-          currentGermanRef.current = data.tts;
-          hasRepeatedRef.current = false;
-          setEcho(data.tts);
           setPhase("speaking");
-          speak(data.tts);
+
+          // Don't use echo filtering for vocabulary — the 300ms resume delay is sufficient,
+          // and echo-matching would silently discard valid same-word answers (e.g. "auto"→"Auto")
+          setEcho("");
+
+          if (isTopicPhase) {
+            // First word: just say the Finnish word, no repeat
+            ttsQueueRef.current = [];
+            speak(data.word || "");
+          } else if (repeatModeRef.current && data.correctWord) {
+            // Repeat mode: feedback → pause → correctWord again → pause → next Finnish word
+            const feedback = data.correct
+              ? "Richtig!"
+              : `Falsch, es heißt ${data.correctWord}.`;
+            ttsQueueRef.current = [
+              { text: data.correctWord, delay: 1500 },
+              { text: data.word || "", delay: 800 },
+            ];
+            speak(feedback);
+          } else {
+            // No repeat: combined TTS string
+            ttsQueueRef.current = [];
+            speak(data.tts || data.word || "");
+          }
         } catch {
           setErrorMsg("Error. Listening again...");
           setPhase("error");
@@ -129,8 +193,8 @@ export default function VoiceTutor() {
         const tagged: Result = { ...data, mode };
         setResult(tagged);
         currentGermanRef.current = data.german;
-        if (mode === "discussion") lastDiscussionReplyRef.current = data.german;
         hasRepeatedRef.current = false;
+        if (mode === "discussion") lastDiscussionReplyRef.current = data.german;
         setEcho(data.german);
         setPhase("speaking");
         speak(data.german);
@@ -157,7 +221,7 @@ export default function VoiceTutor() {
       ? vocabPhase === "topic" ? "fi-FI" : "de-DE"
       : MODE_LANG[mode];
 
-  // Vocabulary: short silence (single word) and short resume (no long pause needed on PC)
+  // Vocabulary: short silence (single word) and short resume (no long echo tail on PC)
   const silenceMs = mode === "vocabulary" ? 500 : 1500;
   const resumeDelayMs = mode === "vocabulary" ? 300 : 2000;
 
@@ -169,14 +233,20 @@ export default function VoiceTutor() {
     resumeDelayMs,
   });
 
+  const resetVocabState = useCallback(() => {
+    setVocabPhase("topic");
+    vocabTopicRef.current = "";
+    vocabWordRef.current = "";
+    vocabUsedWordsRef.current = [];
+    vocabCorrectWordRef.current = "";
+    clearTTSQueue();
+  }, [clearTTSQueue]);
+
   const handleStart = useCallback(() => {
     setSpoken("");
     setResult(null);
     if (mode === "vocabulary") {
-      setVocabPhase("topic");
-      vocabTopicRef.current = "";
-      vocabWordRef.current = "";
-      vocabUsedWordsRef.current = [];
+      resetVocabState();
       setPhase("speaking");
       // Speak intro; recognition starts after TTS ends via handleTTSEnd → restart()
       speak("Welches Thema möchtest du wählen? Sag es auf Finnisch");
@@ -184,19 +254,19 @@ export default function VoiceTutor() {
       setPhase("listening");
       start();
     }
-  }, [start, speak, mode]);
+  }, [start, speak, mode, resetVocabState]);
 
   const handleStop = useCallback(() => {
     stop();
     cancel();
+    clearTTSQueue();
     setPhase("idle");
+    setSpoken("");
+    setResult(null);
     if (mode === "vocabulary") {
-      setVocabPhase("topic");
-      vocabTopicRef.current = "";
-      vocabWordRef.current = "";
-      vocabUsedWordsRef.current = [];
+      resetVocabState();
     }
-  }, [stop, cancel, mode]);
+  }, [stop, cancel, clearTTSQueue, mode, resetVocabState]);
 
   const handleModeChange = useCallback(
     (next: Mode) => {
@@ -205,16 +275,14 @@ export default function VoiceTutor() {
         cancel();
         setPhase("idle");
       }
+      clearTTSQueue();
       setMode(next);
       setSpoken("");
       setResult(null);
       lastDiscussionReplyRef.current = "";
-      setVocabPhase("topic");
-      vocabTopicRef.current = "";
-      vocabWordRef.current = "";
-      vocabUsedWordsRef.current = [];
+      resetVocabState();
     },
-    [phase, stop, cancel]
+    [phase, stop, cancel, clearTTSQueue, resetVocabState]
   );
 
   // Space bar to start/stop
@@ -351,15 +419,24 @@ export default function VoiceTutor() {
       {/* Result — vocabulary */}
       {result?.mode === "vocabulary" && (
         <div className="mt-6 w-full max-w-md">
+          {/* Feedback from last answer */}
+          {result.correct !== null && (
+            <div className="mb-5 pb-4 border-b border-gray-800">
+              <p className={`text-sm font-semibold uppercase tracking-widest ${result.correct ? "text-green-500" : "text-red-500"}`}>
+                {result.correct ? "Richtig!" : "Falsch"}
+              </p>
+              {result.correctWord && (
+                <p className={`text-3xl font-bold mt-1 ${result.correct ? "text-green-300" : "text-white"}`}>
+                  {result.correctWord}
+                </p>
+              )}
+            </div>
+          )}
+          {/* Next word to translate */}
           <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">
             Translate to German
           </p>
           <p className="text-white text-4xl font-bold tracking-wide">{result.word}</p>
-          {result.correct !== null && (
-            <p className={`mt-3 text-sm font-medium ${result.correct ? "text-green-400" : "text-red-400"}`}>
-              {result.correct ? "Richtig!" : "Falsch"}
-            </p>
-          )}
         </div>
       )}
 
