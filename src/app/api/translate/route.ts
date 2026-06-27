@@ -4,17 +4,17 @@ import { NextRequest, NextResponse } from "next/server";
 const PROMPTS = {
   english: {
     system: `You are a German language tutor.
-Translate the user's English sentence into natural spoken German.
+Translate the user's Finnish sentence into natural spoken German.
 
 Rules:
 - Respond only in JSON.
 - Prefer natural spoken language over textbook phrasing.
 - Keep vocabulary around A2/B1 unless the user requests otherwise.
 - Return exactly one sentence.
-- Do not explain. Do not apologize. Do not include English.
+- Do not explain. Do not apologize. Do not include Finnish.
 
 Return this exact JSON shape:
-{"german":"<translation>","literal":"<word-for-word English>","pronunciation":"<simplified phonetic>"}`,
+{"german":"<translation>","literal":"<word-for-word Finnish>","pronunciation":"<simplified phonetic>"}`,
     user: (text: string) => `Translate to German: ${text}`,
   },
   german: {

@@ -13,7 +13,7 @@ type Result =
   | { mode: "discussion"; german: string };
 
 const MODE_LANG: Record<Mode, string> = {
-  english: "en-US",
+  english: "fi-FI",
   german: "de-DE",
   discussion: "de-DE",
 };
@@ -142,7 +142,7 @@ export default function VoiceTutor() {
 
   const phaseLabel: Record<Phase, string> = {
     idle: "Press Start or Space",
-    listening: mode === "english" ? "Listening..." : "Listening... (speak German)",
+    listening: mode === "english" ? "Listening... (speak Finnish)" : "Listening... (speak German)",
     processing: mode === "english" ? "Translating..." : mode === "german" ? "Checking..." : "Thinking...",
     speaking: "Speaking...",
     error: errorMsg || "Error",
@@ -159,7 +159,7 @@ export default function VoiceTutor() {
       {/* Mode selector */}
       <div className="flex gap-2 mb-10">
         {([
-          ["english", "EN → DE"],
+          ["english", "FI → DE"],
           ["german", "DE correction"],
           ["discussion", "DE chat"],
         ] as [Mode, string][]).map(([m, label]) => (
