@@ -22,7 +22,7 @@ export function useSpeechRecognition({ onResult, onError, lang = "en-US" }: Opti
   useEffect(() => { langRef.current = lang; }, [lang]);
 
   const build = useCallback((): any | null => {
-    const SR = window.SpeechRecognition || (window as any).webkitSpeechRecognition;
+    const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
     if (!SR) {
       onErrorRef.current?.("Speech recognition not supported. Use Chrome.");
       return null;
