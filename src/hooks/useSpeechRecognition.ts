@@ -6,13 +6,12 @@ interface Options {
   onResult: (transcript: string) => void;
   onError?: (error: string) => void;
   lang?: string;
+  silenceMs?: number;
 }
 
-const SILENCE_MS = 1500;
-// How long to suppress results after TTS ends — long enough for Android echoes to clear
+const DEFAULT_SILENCE_MS = 1500;
 const RESUME_DELAY_MS = 2000;
 
-// Returns true if transcript looks like an echo of the TTS output
 function isEcho(transcript: string, ttsText: string): boolean {
   if (!ttsText) return false;
   const a = transcript.toLowerCase().split(/\s+/);
@@ -21,22 +20,21 @@ function isEcho(transcript: string, ttsText: string): boolean {
   return overlap / a.length > 0.6;
 }
 
-export function useSpeechRecognition({ onResult, onError, lang = "en-US" }: Options) {
+export function useSpeechRecognition({ onResult, onError, lang = "en-US", silenceMs }: Options) {
   const recognitionRef = useRef<any>(null);
   const onResultRef = useRef(onResult);
   const onErrorRef = useRef(onError);
   const langRef = useRef(lang);
+  const silenceMsRef = useRef(silenceMs ?? DEFAULT_SILENCE_MS);
 
-  // Whether we should act on incoming speech (false while processing/speaking)
   const activeRef = useRef(false);
-  // Whether the recognition session is currently alive
   const runningRef = useRef(false);
-  // Last TTS output — used to detect and discard microphone echo
   const echoTextRef = useRef("");
 
   useEffect(() => { onResultRef.current = onResult; });
   useEffect(() => { onErrorRef.current = onError; });
   useEffect(() => { langRef.current = lang; }, [lang]);
+  useEffect(() => { silenceMsRef.current = silenceMs ?? DEFAULT_SILENCE_MS; }, [silenceMs]);
 
   const build = useCallback((): any | null => {
     const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
@@ -76,19 +74,18 @@ export function useSpeechRecognition({ onResult, onError, lang = "en-US" }: Opti
         debounceTimer = null;
         if (!transcript || !activeRef.current) return;
 
-        // Drop silent echoes of our own TTS output
         if (isEcho(transcript, echoTextRef.current)) return;
 
         activeRef.current = false;
         onResultRef.current(transcript);
-      }, SILENCE_MS);
+      }, silenceMsRef.current);
     };
 
     r.onerror = (event: any) => {
       clearDebounce();
       accumulated = "";
       if (event.error === "aborted") return;
-      if (event.error === "no-speech") return; // onend will restart if needed
+      if (event.error === "no-speech") return;
       runningRef.current = false;
       onErrorRef.current?.(`Speech error: ${event.error}`);
     };
@@ -96,8 +93,7 @@ export function useSpeechRecognition({ onResult, onError, lang = "en-US" }: Opti
     r.onend = () => {
       runningRef.current = false;
       if (recognitionRef.current !== r) return;
-      if (!activeRef.current) return; // paused intentionally, don't restart
-      // Unexpected end while listening — restart transparently
+      if (!activeRef.current) return;
       setTimeout(() => {
         if (recognitionRef.current !== r || !activeRef.current) return;
         const fresh = build();
@@ -136,7 +132,6 @@ export function useSpeechRecognition({ onResult, onError, lang = "en-US" }: Opti
   }, []);
 
   const restart = useCallback(() => {
-    // Always start a fresh instance — avoids Android silent-session-death
     const prev = recognitionRef.current;
     recognitionRef.current = null;
     runningRef.current = false;
@@ -152,7 +147,6 @@ export function useSpeechRecognition({ onResult, onError, lang = "en-US" }: Opti
     }, RESUME_DELAY_MS);
   }, [build]);
 
-  // Called by the component after TTS speaks, so we know what to treat as echo
   const setEcho = useCallback((text: string) => {
     echoTextRef.current = text;
   }, []);

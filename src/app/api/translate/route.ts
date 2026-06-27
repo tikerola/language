@@ -25,11 +25,14 @@ tts rules (keep short):
 - Correct: "Richtig! <next word>"
 - Wrong: "Falsch, es heißt <correct German>. <next word>"
 word: just the Finnish word, no punctuation. correct: omit for first word.
-Choose common A2/B1 vocabulary. Do not repeat words.`,
-    user: (topic: string, word?: string, answer?: string) =>
-      word && answer
-        ? `Topic: ${topic}\nWord: ${word}\nAnswer: ${answer}`
-        : `Topic: ${topic}`,
+Choose common A2/B1 vocabulary. Never use any word listed under "Used words".`,
+    user: (topic: string, word?: string, answer?: string, usedWords?: string) => {
+      const lines = word && answer
+        ? [`Topic: ${topic}`, `Word: ${word}`, `Answer: ${answer}`]
+        : [`Topic: ${topic}`];
+      if (usedWords) lines.push(`Used words: ${usedWords}`);
+      return lines.join("\n");
+    },
   },
 };
 
@@ -51,14 +54,14 @@ export async function POST(req: NextRequest) {
 
   try {
     if (mode === "vocabulary") {
-      const { topic, word, answer } = body;
+      const { topic, word, answer, usedWords } = body;
       if (!topic?.trim()) {
         return NextResponse.json({ error: "No topic provided" }, { status: 400 });
       }
       const prompt = PROMPTS.vocabulary;
       const result = await makeModel().generateContent([
         { text: prompt.system },
-        { text: prompt.user(topic.trim(), word?.trim(), answer?.trim()) },
+        { text: prompt.user(topic.trim(), word?.trim(), answer?.trim(), usedWords?.trim()) },
       ]);
       return NextResponse.json(JSON.parse(result.response.text()));
     }

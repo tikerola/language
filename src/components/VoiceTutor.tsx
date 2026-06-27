@@ -36,6 +36,7 @@ export default function VoiceTutor() {
   const lastDiscussionReplyRef = useRef("");
   const vocabTopicRef = useRef("");
   const vocabWordRef = useRef("");
+  const vocabUsedWordsRef = useRef<string[]>([]);
 
   useEffect(() => { repeatModeRef.current = repeatMode; }, [repeatMode]);
 
@@ -64,6 +65,7 @@ export default function VoiceTutor() {
 
           if (isTopicPhase) {
             vocabTopicRef.current = transcript;
+            vocabUsedWordsRef.current = [];
             bodyData = { mode: "vocabulary", topic: transcript };
           } else {
             bodyData = {
@@ -71,6 +73,7 @@ export default function VoiceTutor() {
               topic: vocabTopicRef.current,
               word: vocabWordRef.current,
               answer: transcript,
+              usedWords: vocabUsedWordsRef.current.join(","),
             };
           }
 
@@ -84,6 +87,7 @@ export default function VoiceTutor() {
           const data = await res.json();
 
           vocabWordRef.current = data.word;
+          vocabUsedWordsRef.current = [...vocabUsedWordsRef.current, data.word];
           setVocabPhase("answer");
           setResult({
             mode: "vocabulary",
@@ -153,10 +157,14 @@ export default function VoiceTutor() {
       ? vocabPhase === "topic" ? "fi-FI" : "de-DE"
       : MODE_LANG[mode];
 
+  // Single-word answers in vocabulary don't need the full 1500ms hesitation buffer
+  const silenceMs = mode === "vocabulary" ? 500 : 1500;
+
   const { start, stop, restart, setEcho } = useSpeechRecognition({
     onResult: handleTranscript,
     onError: handleError,
     lang: recogLang,
+    silenceMs,
   });
 
   const handleStart = useCallback(() => {
@@ -166,6 +174,7 @@ export default function VoiceTutor() {
       setVocabPhase("topic");
       vocabTopicRef.current = "";
       vocabWordRef.current = "";
+      vocabUsedWordsRef.current = [];
       setPhase("speaking");
       // Speak intro; recognition starts after TTS ends via handleTTSEnd → restart()
       speak("Welches Thema möchtest du wählen? Sag es auf Finnisch");
@@ -183,6 +192,7 @@ export default function VoiceTutor() {
       setVocabPhase("topic");
       vocabTopicRef.current = "";
       vocabWordRef.current = "";
+      vocabUsedWordsRef.current = [];
     }
   }, [stop, cancel, mode]);
 
@@ -200,6 +210,7 @@ export default function VoiceTutor() {
       setVocabPhase("topic");
       vocabTopicRef.current = "";
       vocabWordRef.current = "";
+      vocabUsedWordsRef.current = [];
     },
     [phase, stop, cancel]
   );
