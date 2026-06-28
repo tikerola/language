@@ -15,43 +15,34 @@ const PROMPTS = {
     user: (text: string, context?: string) =>
       context ? `Previous reply: "${context}"\n\nUser: ${text}` : text,
   },
-  vocabulary: {
-    system: `You are a Finnish→German vocabulary quiz. The student is Finnish and must say the German translation of each Finnish word you give them.
-
-RULES:
-1. "word" field: ALWAYS a Finnish word (e.g. "maito", "vesi"). NEVER German.
-2. "correctWord" field: the correct German translation of the Word that was answered. Empty string on first word.
-3. "tts" field: spoken aloud — German for feedback, Finnish for the quiz word.
-4. NEVER return a word from "Used words". Check this list every time before choosing.
-5. NEVER use the Topic word itself as a vocabulary word. The Topic is a category, not a quiz word.
+  vocabulary_generate: {
+    system: `Generate exactly 10 useful, commonly used German vocabulary words for the given topic/category.
+The learner is Finnish, so provide the Finnish translation of each word.
+Rules:
+- Prefer nouns with their correct article (der, die, das)
+- For verbs, use the infinitive form
+- For adjectives and adverbs, use the base form
+- Prefer words a beginner/intermediate learner (A1–B1) would encounter in daily life
+- Avoid obscure, rare, technical, or literary vocabulary
+- Exactly 10 words, no duplicates
+- The Finnish word should be a natural, common Finnish equivalent
 
 Return JSON only:
-{"tts":"<spoken>","word":"<next Finnish word>","correct":true|false,"correctWord":"<German>"}
+{"words":[{"finnish":"<Finnish word>","german":"<German word with article if noun>"},...]}`,
+    user: (topic: string) => `Topic/Category: ${topic}`,
+  },
+  vocabulary_check: {
+    system: `Evaluate if the student's spoken German answer is correct for the given Finnish word.
+Rules:
+- Capitalization never matters ("milch" = "Milch")
+- Missing or wrong article (der/die/das) is acceptable
+- Accept clear synonyms
+- Accept minor speech-recognition typos
+- If the answer matches the correct German word (ignoring case/articles), it is always correct
 
-tts format:
-- No Answer (first word): just the Finnish word, e.g. "maito"
-- Correct: "Richtig! <next Finnish word>"
-- Wrong: "Falsch, es heißt <correct German>. <next Finnish word>"
-
-correct: true or false. Omit only when no Answer given.
-Evaluation rules: capitalization never matters ("schwimmen" = "Schwimmen"). Missing or wrong article is fine. Accept clear synonyms and minor speech-recognition typos. If the answer is the same word as the correct German translation, it is ALWAYS correct.
-
-Examples:
-Topic: ruoka
-→ {"tts":"maito","word":"maito","correctWord":""}
-
-Topic: ruoka, Word: maito, Answer: Milch, Used words: maito
-→ {"tts":"Richtig! vesi","word":"vesi","correct":true,"correctWord":"Milch"}
-
-Topic: ruoka, Word: vesi, Answer: Milch, Used words: maito,vesi
-→ {"tts":"Falsch, es heißt Wasser. leipä","word":"leipä","correct":false,"correctWord":"Wasser"}`,
-    user: (topic: string, word?: string, answer?: string, usedWords?: string) => {
-      const lines = word && answer
-        ? [`Topic: ${topic}`, `Word: ${word}`, `Answer: ${answer}`]
-        : [`Topic: ${topic} (this is the category only — do NOT use "${topic}" as the quiz word)`];
-      if (usedWords) lines.push(`Used words (never repeat any of these): ${usedWords}`);
-      return lines.join("\n");
-    },
+Return JSON only: {"correct":true|false}`,
+    user: (finnish: string, german: string, answer: string) =>
+      `Finnish word: ${finnish}\nCorrect German: ${german}\nStudent answer: ${answer}`,
   },
 };
 
@@ -72,34 +63,36 @@ export async function POST(req: NextRequest) {
   const { mode = "english" } = body;
 
   try {
-    if (mode === "vocabulary") {
-      const { topic, word, answer, usedWords } = body;
+    if (mode === "vocabulary_generate") {
+      const { topic } = body;
       if (!topic?.trim()) {
         return NextResponse.json({ error: "No topic provided" }, { status: 400 });
       }
+      const prompt = PROMPTS.vocabulary_generate;
+      const result = await makeModel().generateContent([
+        { text: prompt.system },
+        { text: prompt.user(topic.trim()) },
+      ]);
+      return NextResponse.json(JSON.parse(result.response.text()));
+    }
 
-      const prompt = PROMPTS.vocabulary;
-      const userMsg = prompt.user(topic.trim(), word?.trim(), answer?.trim(), usedWords?.trim());
-
-      let parsed = JSON.parse(
-        (await makeModel().generateContent([{ text: prompt.system }, { text: userMsg }]))
-          .response.text()
-      );
-
-      // Safety net: if the model returned a used word, retry once with an explicit override
-      if (usedWords?.trim()) {
-        const used = new Set(usedWords.split(",").map((w: string) => w.trim().toLowerCase()));
-        if (parsed.word && used.has(parsed.word.toLowerCase())) {
-          const retryMsg = userMsg +
-            `\n\nYou returned "${parsed.word}" which is already in the Used words list. You MUST choose a different Finnish word not in that list.`;
-          parsed = JSON.parse(
-            (await makeModel().generateContent([{ text: prompt.system }, { text: retryMsg }]))
-              .response.text()
-          );
-        }
+    if (mode === "vocabulary_check") {
+      const { finnish, german, answer } = body;
+      if (!answer?.trim()) {
+        return NextResponse.json({ correct: false });
       }
-
-      return NextResponse.json(parsed);
+      // Fast client-side check: strip articles and compare lowercase
+      const norm = (s: string) =>
+        s.trim().toLowerCase().replace(/^(der|die|das|ein|eine)\s+/, "");
+      if (norm(answer) === norm(german)) {
+        return NextResponse.json({ correct: true });
+      }
+      const prompt = PROMPTS.vocabulary_check;
+      const result = await makeModel().generateContent([
+        { text: prompt.system },
+        { text: prompt.user(finnish, german, answer.trim()) },
+      ]);
+      return NextResponse.json(JSON.parse(result.response.text()));
     }
 
     const { text, context } = body;
@@ -108,8 +101,8 @@ export async function POST(req: NextRequest) {
     }
     const prompt = PROMPTS[mode as keyof typeof PROMPTS] ?? PROMPTS.english;
     const result = await makeModel().generateContent([
-      { text: prompt.system },
-      { text: prompt.user(text.trim(), context) },
+      { text: (prompt as any).system },
+      { text: (prompt as any).user(text.trim(), context) },
     ]);
     return NextResponse.json(JSON.parse(result.response.text()));
   } catch (err) {

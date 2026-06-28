@@ -7,36 +7,38 @@ interface Options {
 }
 
 export function useSpeechSynthesis({ onEnd }: Options = {}) {
-  const voiceRef = useRef<SpeechSynthesisVoice | null>(null);
+  const deVoiceRef = useRef<SpeechSynthesisVoice | null>(null);
 
-  const loadVoice = useCallback(() => {
-    if (voiceRef.current) return voiceRef.current;
+  const loadDeVoice = useCallback(() => {
+    if (deVoiceRef.current) return deVoiceRef.current;
     const voices = window.speechSynthesis.getVoices();
     const german =
       voices.find((v) => v.lang === "de-DE" && v.localService) ||
       voices.find((v) => v.lang.startsWith("de")) ||
       null;
-    voiceRef.current = german;
+    deVoiceRef.current = german;
     return german;
   }, []);
 
   const speak = useCallback(
-    (text: string, rate = 1.0) => {
+    (text: string, rate = 1.0, lang = "de-DE") => {
       window.speechSynthesis.cancel();
 
       const utterance = new SpeechSynthesisUtterance(text);
-      utterance.lang = "de-DE";
+      utterance.lang = lang;
       utterance.rate = rate;
 
-      const voice = loadVoice();
-      if (voice) utterance.voice = voice;
+      if (lang.startsWith("de")) {
+        const voice = loadDeVoice();
+        if (voice) utterance.voice = voice;
+      }
 
       utterance.onend = () => onEnd?.();
       utterance.onerror = () => onEnd?.();
 
       window.speechSynthesis.speak(utterance);
     },
-    [loadVoice, onEnd]
+    [loadDeVoice, onEnd]
   );
 
   const cancel = useCallback(() => {
