@@ -52,7 +52,7 @@ export function useSpeechRecognition({ onResult, onError, onAudioStart, lang = "
     const r = new SR();
     r.lang = langRef.current;
     r.continuous = true;
-    r.interimResults = false;
+    r.interimResults = true;
 
     let accumulated = "";
     let debounceTimer: ReturnType<typeof setTimeout> | null = null;
@@ -61,18 +61,7 @@ export function useSpeechRecognition({ onResult, onError, onAudioStart, lang = "
       if (debounceTimer) { clearTimeout(debounceTimer); debounceTimer = null; }
     };
 
-    r.onresult = (event: any) => {
-      if (!activeRef.current) return;
-
-      for (let i = event.resultIndex; i < event.results.length; i++) {
-        if (event.results[i].isFinal) {
-          const t = event.results[i][0].transcript.trim();
-          if (t) accumulated += (accumulated ? " " : "") + t;
-        }
-      }
-
-      if (!accumulated) return;
-
+    const scheduleSubmit = () => {
       clearDebounce();
       debounceTimer = setTimeout(() => {
         const transcript = accumulated.trim();
@@ -85,6 +74,25 @@ export function useSpeechRecognition({ onResult, onError, onAudioStart, lang = "
         activeRef.current = false;
         onResultRef.current(transcript);
       }, silenceMsRef.current);
+    };
+
+    r.onresult = (event: any) => {
+      if (!activeRef.current) return;
+
+      for (let i = event.resultIndex; i < event.results.length; i++) {
+        if (event.results[i].isFinal) {
+          const t = event.results[i][0].transcript.trim();
+          if (t) accumulated += (accumulated ? " " : "") + t;
+        }
+      }
+
+      // Any speech activity (interim or final) resets the silence timer.
+      // Only schedule submission once we have accumulated final text.
+      if (accumulated) {
+        scheduleSubmit();
+      } else {
+        clearDebounce();
+      }
     };
 
     r.onaudiostart = () => { onAudioStartRef.current?.(); };
