@@ -65,6 +65,8 @@ interface TTSItem {
   onSpeak?: () => void;
 }
 
+const VERSION = "1.0.1";
+
 export default function VoiceTutor() {
   const [phase, setPhase] = useState<Phase>("idle");
   const [mode, setMode] = useState<Mode>("english");
@@ -499,9 +501,10 @@ export default function VoiceTutor() {
 
   return (
     <div className="min-h-screen bg-gray-950 text-white flex flex-col items-center justify-center p-6 select-none">
-      <h1 className="text-xl font-semibold tracking-wide text-gray-400 mb-8">
+      <h1 className="text-xl font-semibold tracking-wide text-gray-400 mb-1">
         German Voice Tutor
       </h1>
+      <p className="text-xs text-gray-700 mb-8">v{VERSION}</p>
 
       {/* Mode selector */}
       <div className="flex flex-wrap gap-2 mb-10 justify-center">

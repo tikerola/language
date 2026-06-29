@@ -96,8 +96,21 @@ export function useSpeechRecognition({ onResult, onError, onAudioStart, lang = "
 
       // Rebuild accumulated from the map so that an updated final result at the
       // same index overwrites the previous value instead of appending to it.
+      // Rebuild accumulated. On Android Chrome, each word gets a new result
+      // index but the transcript value is the full cumulative phrase so far
+      // (e.g. index 0="Toimiiko", index 1="Toimiiko jo", index 2="Toimiiko jo paremmin").
+      // Joining all values would duplicate text, so when a new entry starts with
+      // the current accumulated text we replace rather than append.
       const keys = [...finalMap.keys()].sort((a, b) => a - b);
-      accumulated = keys.map(k => finalMap.get(k)!).join(" ");
+      accumulated = "";
+      for (const k of keys) {
+        const t = finalMap.get(k)!;
+        if (accumulated && t.toLowerCase().startsWith(accumulated.toLowerCase())) {
+          accumulated = t;
+        } else {
+          accumulated = accumulated ? accumulated + " " + t : t;
+        }
+      }
 
       if (accumulated) {
         scheduleSubmit();
