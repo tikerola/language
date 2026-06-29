@@ -65,7 +65,7 @@ interface TTSItem {
   onSpeak?: () => void;
 }
 
-const VERSION = "1.0.1";
+const VERSION = "1.0.2";
 
 export default function VoiceTutor() {
   const [phase, setPhase] = useState<Phase>("idle");
@@ -332,7 +332,7 @@ export default function VoiceTutor() {
   }, []);
 
   const silenceMs = mode === "vocabulary" ? 1000 : 1500;
-  const resumeDelayMs = mode === "vocabulary" ? 400 : 2000;
+  const resumeDelayMs = 0;
 
   const { start, stop, restart, setEcho } = useSpeechRecognition({
     onResult: handleTranscript,
