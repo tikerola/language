@@ -56,6 +56,7 @@ export function useSpeechRecognition({ onResult, onError, onAudioStart, lang = "
 
     let accumulated = "";
     let debounceTimer: ReturnType<typeof setTimeout> | null = null;
+    let hadFinalResult = false;
 
     const clearDebounce = () => {
       if (debounceTimer) { clearTimeout(debounceTimer); debounceTimer = null; }
@@ -81,6 +82,7 @@ export function useSpeechRecognition({ onResult, onError, onAudioStart, lang = "
 
       for (let i = event.resultIndex; i < event.results.length; i++) {
         if (event.results[i].isFinal) {
+          hadFinalResult = true;
           const t = event.results[i][0].transcript.trim();
           if (t) accumulated += (accumulated ? " " : "") + t;
         }
@@ -110,6 +112,11 @@ export function useSpeechRecognition({ onResult, onError, onAudioStart, lang = "
       runningRef.current = false;
       if (recognitionRef.current !== r) return;
       if (!activeRef.current) return;
+      // If a final result was captured, wait past the debounce window so the
+      // debounce fires first and sets activeRef.current = false. This prevents
+      // Android from replaying buffered audio into the new session.
+      // If no result was captured (silence timeout), restart quickly.
+      const delay = hadFinalResult ? silenceMsRef.current + 200 : 300;
       setTimeout(() => {
         if (recognitionRef.current !== r || !activeRef.current) return;
         const fresh = build();
@@ -117,7 +124,7 @@ export function useSpeechRecognition({ onResult, onError, onAudioStart, lang = "
         recognitionRef.current = fresh;
         runningRef.current = true;
         try { fresh.start(); } catch { runningRef.current = false; }
-      }, 300);
+      }, delay);
     };
 
     return r;
