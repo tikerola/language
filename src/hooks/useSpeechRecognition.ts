@@ -54,6 +54,10 @@ export function useSpeechRecognition({ onResult, onError, onAudioStart, lang = "
     r.continuous = true;
     r.interimResults = true;
 
+    // finalMap stores the latest transcript per result index so that Android's
+    // progressive isFinal updates (resultIndex=0 each time, growing text) overwrite
+    // instead of appending. accumulated is rebuilt from the map on each event.
+    const finalMap = new Map<number, string>();
     let accumulated = "";
     let debounceTimer: ReturnType<typeof setTimeout> | null = null;
     let hadFinalResult = false;
@@ -67,6 +71,7 @@ export function useSpeechRecognition({ onResult, onError, onAudioStart, lang = "
       debounceTimer = setTimeout(() => {
         const transcript = accumulated.trim();
         accumulated = "";
+        finalMap.clear();
         debounceTimer = null;
         if (!transcript || !activeRef.current) return;
 
@@ -84,12 +89,16 @@ export function useSpeechRecognition({ onResult, onError, onAudioStart, lang = "
         if (event.results[i].isFinal) {
           hadFinalResult = true;
           const t = event.results[i][0].transcript.trim();
-          if (t) accumulated += (accumulated ? " " : "") + t;
+          if (t) finalMap.set(i, t);
+          else finalMap.delete(i);
         }
       }
 
-      // Any speech activity (interim or final) resets the silence timer.
-      // Only schedule submission once we have accumulated final text.
+      // Rebuild accumulated from the map so that an updated final result at the
+      // same index overwrites the previous value instead of appending to it.
+      const keys = [...finalMap.keys()].sort((a, b) => a - b);
+      accumulated = keys.map(k => finalMap.get(k)!).join(" ");
+
       if (accumulated) {
         scheduleSubmit();
       } else {
@@ -102,6 +111,7 @@ export function useSpeechRecognition({ onResult, onError, onAudioStart, lang = "
     r.onerror = (event: any) => {
       clearDebounce();
       accumulated = "";
+      finalMap.clear();
       if (event.error === "aborted") return;
       if (event.error === "no-speech") return;
       runningRef.current = false;
