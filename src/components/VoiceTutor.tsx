@@ -330,7 +330,7 @@ export default function VoiceTutor() {
   }, []);
 
   const silenceMs = mode === "vocabulary" ? 1000 : 1500;
-  const resumeDelayMs = mode === "vocabulary" ? 400 : 800;
+  const resumeDelayMs = mode === "vocabulary" ? 400 : 2000;
 
   const { start, stop, restart, setEcho } = useSpeechRecognition({
     onResult: handleTranscript,
