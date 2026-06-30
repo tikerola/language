@@ -135,10 +135,20 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(JSON.parse(result.response.text()));
     }
 
-    const { text, context } = body;
+    const { text, context, storyContext } = body;
     if (!text?.trim()) {
       return NextResponse.json({ error: "No text provided" }, { status: 400 });
     }
+
+    if (mode === "discussion" && storyContext) {
+      const systemPrompt = `${PROMPTS.discussion.system}\n\nThe user has just read this German story and may want to discuss it:\n\n${storyContext}`;
+      const result = await makeModel().generateContent([
+        { text: systemPrompt },
+        { text: PROMPTS.discussion.user(text.trim(), context) },
+      ]);
+      return NextResponse.json(JSON.parse(result.response.text()));
+    }
+
     const prompt = PROMPTS[mode as keyof typeof PROMPTS] ?? PROMPTS.english;
     const result = await makeModel().generateContent([
       { text: (prompt as any).system },

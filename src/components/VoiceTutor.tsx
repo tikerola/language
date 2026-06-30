@@ -80,7 +80,7 @@ function formatStoryDate(ts: number): string {
   return new Date(ts).toLocaleDateString("en-GB", { day: "numeric", month: "short" });
 }
 
-const VERSION = "1.0.11";
+const VERSION = "1.0.12";
 
 // Find the character position N words before `charPos` in `text`.
 function rewindPosition(text: string, charPos: number, wordsBack: number): number {
@@ -117,6 +117,8 @@ export default function VoiceTutor() {
   } | null>(null);
   const [vocabQuizWord, setVocabQuizWord] = useState<VocabWord | null>(null);
   const [vocabLastResult, setVocabLastResult] = useState<{ correct: boolean; correctWord: string } | null>(null);
+
+  const [useStoryContext, setUseStoryContext] = useState(false);
 
   // Story state
   const [storySubphase, setStorySubphase] = useState<StorySubphase>("input");
@@ -366,6 +368,9 @@ export default function VoiceTutor() {
             ...(mode === "discussion" && lastDiscussionReplyRef.current
               ? { context: lastDiscussionReplyRef.current }
               : {}),
+            ...(mode === "discussion" && useStoryContext && storyText
+              ? { storyContext: storyText }
+              : {}),
           }),
         });
 
@@ -592,14 +597,14 @@ export default function VoiceTutor() {
     }).catch(() => {});
   }, []);
 
-  const handleWordHover = useCallback(async (rawWord: string) => {
-    const key = rawWord.toLowerCase();
-    const cached = storyTranslationCacheRef.current.get(key);
+  const handleWordHover = useCallback(async (instanceKey: string, rawWord: string) => {
+    const cacheKey = rawWord.toLowerCase();
+    const cached = storyTranslationCacheRef.current.get(cacheKey);
     if (cached) {
-      setStoryTooltip({ key, text: cached.finnish });
+      setStoryTooltip({ key: instanceKey, text: cached.finnish });
       return;
     }
-    setStoryTooltip({ key, text: null });
+    setStoryTooltip({ key: instanceKey, text: null });
     try {
       const res = await fetch("/api/translate", {
         method: "POST",
@@ -608,8 +613,8 @@ export default function VoiceTutor() {
       });
       if (!res.ok) throw new Error();
       const data = await res.json();
-      storyTranslationCacheRef.current.set(key, { german: data.german, finnish: data.finnish });
-      setStoryTooltip(prev => prev?.key === key ? { key, text: data.finnish } : prev);
+      storyTranslationCacheRef.current.set(cacheKey, { german: data.german, finnish: data.finnish });
+      setStoryTooltip(prev => prev?.key === instanceKey ? { key: instanceKey, text: data.finnish } : prev);
       persistTranslations();
     } catch {
       setStoryTooltip(null);
@@ -1183,15 +1188,15 @@ export default function VoiceTutor() {
                     {para.split(" ").map((token, wi) => {
                       const clean = token.replace(/[^a-zA-ZäöüÄÖÜß]/g, "");
                       const isSelected = clean ? storySelectedKeys.has(clean.toLowerCase()) : false;
-                      const tooltipKey = clean ? clean.toLowerCase() : null;
-                      const showTooltip = tooltipKey && storyTooltip?.key === tooltipKey;
+                      const instanceKey = `${pi}-${wi}`;
+                      const showTooltip = clean && storyTooltip?.key === instanceKey;
                       return (
                         <span key={wi}>
                           {wi > 0 && " "}
                           {clean ? (
                             <span
                               className="relative inline"
-                              onMouseEnter={() => handleWordHover(clean)}
+                              onMouseEnter={() => handleWordHover(instanceKey, clean)}
                               onMouseLeave={() => setStoryTooltip(null)}
                               onClick={() => handleWordClick(clean)}
                             >
@@ -1294,16 +1299,31 @@ export default function VoiceTutor() {
             </div>
           )}
 
-          <button
-            onClick={() => setRepeatMode((v) => !v)}
-            className={`mt-12 px-4 py-1.5 rounded-full text-xs font-medium tracking-wide transition-colors
-              ${repeatMode
-                ? "bg-blue-600 text-white"
-                : "bg-gray-800 text-gray-500 hover:text-gray-300"
-              }`}
-          >
-            Repeat ×2
-          </button>
+          <div className="mt-12 flex gap-2 flex-wrap justify-center">
+            <button
+              onClick={() => setRepeatMode((v) => !v)}
+              className={`px-4 py-1.5 rounded-full text-xs font-medium tracking-wide transition-colors
+                ${repeatMode
+                  ? "bg-blue-600 text-white"
+                  : "bg-gray-800 text-gray-500 hover:text-gray-300"
+                }`}
+            >
+              Repeat ×2
+            </button>
+
+            {mode === "discussion" && storyText && (
+              <button
+                onClick={() => setUseStoryContext((v) => !v)}
+                className={`px-4 py-1.5 rounded-full text-xs font-medium tracking-wide transition-colors
+                  ${useStoryContext
+                    ? "bg-yellow-600 text-white"
+                    : "bg-gray-800 text-gray-500 hover:text-gray-300"
+                  }`}
+              >
+                {useStoryContext ? `📖 ${storyTitle || "Story"}` : "Use story"}
+              </button>
+            )}
+          </div>
 
           <p className="mt-4 text-xs text-gray-700">Space to start / stop</p>
         </>
