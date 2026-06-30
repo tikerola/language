@@ -68,17 +68,19 @@ interface TTSItem {
 }
 
 interface StoryEntry {
+  id?: number;
   title: string;
   text: string;
   subject: string;
   createdAt: number;
+  translations?: Record<string, { german: string; finnish: string }>;
 }
 
 function formatStoryDate(ts: number): string {
   return new Date(ts).toLocaleDateString("en-GB", { day: "numeric", month: "short" });
 }
 
-const VERSION = "1.0.9";
+const VERSION = "1.0.11";
 
 // Find the character position N words before `charPos` in `text`.
 function rewindPosition(text: string, charPos: number, wordsBack: number): number {
@@ -125,6 +127,7 @@ export default function VoiceTutor() {
   const [storySelectedKeys, setStorySelectedKeys] = useState<Set<string>>(new Set());
   const [storyVocabWords, setStoryVocabWords] = useState<VocabWord[]>([]);
   const [storyArchive, setStoryArchive] = useState<StoryEntry[]>([]);
+  const [storyTooltip, setStoryTooltip] = useState<{ key: string; text: string | null } | null>(null);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const repeatModeRef = useRef(false);
@@ -141,6 +144,8 @@ export default function VoiceTutor() {
   // Story refs
   const storySelectedKeysRef = useRef<Set<string>>(new Set());
   const storyKeyToGermanRef = useRef<Map<string, string>>(new Map());
+  const storyTranslationCacheRef = useRef<Map<string, { german: string; finnish: string }>>(new Map());
+  const currentStoryIdRef = useRef<number | null>(null);
   const storyPlayOffsetRef = useRef(0);
   const storyCharIndexRef = useRef(0);
   const storyPlayStartTimeRef = useRef(0);
@@ -154,10 +159,10 @@ export default function VoiceTutor() {
   const clearTTSQueue = useCallback(() => { ttsQueueRef.current = []; }, []);
 
   useEffect(() => {
-    try {
-      const saved = localStorage.getItem("story_archive");
-      if (saved) setStoryArchive(JSON.parse(saved));
-    } catch {}
+    fetch("/api/stories")
+      .then((r) => r.json())
+      .then((data) => { if (Array.isArray(data)) setStoryArchive(data); })
+      .catch(() => {});
   }, []);
 
   // Radio audio element lifecycle
@@ -430,11 +435,14 @@ export default function VoiceTutor() {
     setIsStoryPlaying(false);
     storySelectedKeysRef.current = new Set();
     storyKeyToGermanRef.current = new Map();
+    storyTranslationCacheRef.current = new Map();
+    currentStoryIdRef.current = null;
     storyPlayOffsetRef.current = 0;
     storyCharIndexRef.current = 0;
     storyPlayStartTimeRef.current = 0;
     setStorySelectedKeys(new Set());
     setStoryVocabWords([]);
+    setStoryTooltip(null);
   }, []);
 
   const generateStory = useCallback(async (subject: string) => {
@@ -453,11 +461,15 @@ export default function VoiceTutor() {
       setStoryText(text);
       setStorySubphase("reading");
       if (title && text) {
-        const entry: StoryEntry = { title, text, subject, createdAt: Date.now() };
-        setStoryArchive(prev => {
-          const updated = [entry, ...prev].slice(0, 20);
-          try { localStorage.setItem("story_archive", JSON.stringify(updated)); } catch {}
-          return updated;
+        const saved = await fetch("/api/stories", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ title, text, subject, createdAt: Date.now() }),
+        }).then((r) => r.json()).catch(() => null);
+        if (saved?.id) currentStoryIdRef.current = saved.id;
+        setStoryArchive((prev) => {
+          const entry: StoryEntry = { id: saved?.id, title, text, subject, createdAt: saved?.createdAt ?? Date.now() };
+          return [entry, ...prev.filter((s) => s.id !== saved?.id)].slice(0, 10);
         });
       }
     } catch {
@@ -475,11 +487,16 @@ export default function VoiceTutor() {
     }
     storySelectedKeysRef.current = new Set();
     storyKeyToGermanRef.current = new Map();
+    storyTranslationCacheRef.current = new Map(
+      Object.entries(entry.translations ?? {}) as [string, { german: string; finnish: string }][]
+    );
+    currentStoryIdRef.current = entry.id ?? null;
     storyPlayOffsetRef.current = 0;
     storyCharIndexRef.current = 0;
     storyPlayStartTimeRef.current = 0;
     setStorySelectedKeys(new Set());
     setStoryVocabWords([]);
+    setStoryTooltip(null);
     setIsStoryPlaying(false);
     setStorySubjectInput(entry.subject);
     setStoryTitle(entry.title);
@@ -564,11 +581,45 @@ export default function VoiceTutor() {
     startLearningPhase(words);
   }, [storyVocabWords, cancel, startLearningPhase]);
 
+  const persistTranslations = useCallback(() => {
+    const id = currentStoryIdRef.current;
+    if (!id) return;
+    const translations = Object.fromEntries(storyTranslationCacheRef.current);
+    fetch(`/api/stories/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ translations }),
+    }).catch(() => {});
+  }, []);
+
+  const handleWordHover = useCallback(async (rawWord: string) => {
+    const key = rawWord.toLowerCase();
+    const cached = storyTranslationCacheRef.current.get(key);
+    if (cached) {
+      setStoryTooltip({ key, text: cached.finnish });
+      return;
+    }
+    setStoryTooltip({ key, text: null });
+    try {
+      const res = await fetch("/api/translate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: "word_translate", word: rawWord }),
+      });
+      if (!res.ok) throw new Error();
+      const data = await res.json();
+      storyTranslationCacheRef.current.set(key, { german: data.german, finnish: data.finnish });
+      setStoryTooltip(prev => prev?.key === key ? { key, text: data.finnish } : prev);
+      persistTranslations();
+    } catch {
+      setStoryTooltip(null);
+    }
+  }, []);
+
   const handleWordClick = useCallback(async (word: string) => {
     const key = word.toLowerCase();
 
     if (storySelectedKeysRef.current.has(key)) {
-      // Deselect: remove highlight and remove from vocab list
       storySelectedKeysRef.current.delete(key);
       setStorySelectedKeys(new Set(storySelectedKeysRef.current));
       const canonical = storyKeyToGermanRef.current.get(key);
@@ -582,6 +633,21 @@ export default function VoiceTutor() {
     storySelectedKeysRef.current.add(key);
     setStorySelectedKeys(new Set(storySelectedKeysRef.current));
 
+    const applyTranslation = (german: string, finnish: string) => {
+      storyKeyToGermanRef.current.set(key, german.toLowerCase());
+      const vocabWord: VocabWord = { german, finnish, consecutiveCorrect: 0, attempts: 0, correctAttempts: 0 };
+      setStoryVocabWords(prev => {
+        if (prev.some(w => w.german.toLowerCase() === german.toLowerCase())) return prev;
+        return [...prev, vocabWord];
+      });
+    };
+
+    const cached = storyTranslationCacheRef.current.get(key);
+    if (cached) {
+      applyTranslation(cached.german, cached.finnish);
+      return;
+    }
+
     try {
       const res = await fetch("/api/translate", {
         method: "POST",
@@ -590,18 +656,8 @@ export default function VoiceTutor() {
       });
       if (!res.ok) throw new Error();
       const data = await res.json();
-      storyKeyToGermanRef.current.set(key, data.german.toLowerCase());
-      const vocabWord: VocabWord = {
-        german: data.german,
-        finnish: data.finnish,
-        consecutiveCorrect: 0,
-        attempts: 0,
-        correctAttempts: 0,
-      };
-      setStoryVocabWords(prev => {
-        if (prev.some(w => w.german.toLowerCase() === data.german.toLowerCase())) return prev;
-        return [...prev, vocabWord];
-      });
+      storyTranslationCacheRef.current.set(key, { german: data.german, finnish: data.finnish });
+      applyTranslation(data.german, data.finnish);
     } catch {
       storySelectedKeysRef.current.delete(key);
       setStorySelectedKeys(new Set(storySelectedKeysRef.current));
@@ -1119,7 +1175,7 @@ export default function VoiceTutor() {
                 </button>
               </div>
 
-              <p className="text-xs text-gray-600 uppercase tracking-widest">Click words to save for vocabulary</p>
+              <p className="text-xs text-gray-600 uppercase tracking-widest">Hover words to translate · click to save for vocabulary</p>
 
               <div className="text-gray-300 text-base leading-relaxed space-y-4 select-text">
                 {storyText.split("\n\n").map((para, pi) => (
@@ -1127,16 +1183,29 @@ export default function VoiceTutor() {
                     {para.split(" ").map((token, wi) => {
                       const clean = token.replace(/[^a-zA-ZäöüÄÖÜß]/g, "");
                       const isSelected = clean ? storySelectedKeys.has(clean.toLowerCase()) : false;
+                      const tooltipKey = clean ? clean.toLowerCase() : null;
+                      const showTooltip = tooltipKey && storyTooltip?.key === tooltipKey;
                       return (
                         <span key={wi}>
                           {wi > 0 && " "}
                           {clean ? (
                             <span
+                              className="relative inline"
+                              onMouseEnter={() => handleWordHover(clean)}
+                              onMouseLeave={() => setStoryTooltip(null)}
                               onClick={() => handleWordClick(clean)}
-                              className={`cursor-pointer rounded px-0.5 transition-colors hover:bg-gray-700
-                                ${isSelected ? "text-yellow-400" : ""}`}
                             >
-                              {token}
+                              <span
+                                className={`cursor-pointer rounded px-0.5 transition-colors hover:bg-gray-700
+                                  ${isSelected ? "text-yellow-400" : ""}`}
+                              >
+                                {token}
+                              </span>
+                              {showTooltip && (
+                                <span className="absolute bottom-full left-1/2 -translate-x-1/2 mb-1 px-2 py-0.5 text-xs bg-gray-900 text-gray-100 rounded border border-gray-700 whitespace-nowrap z-20 pointer-events-none">
+                                  {storyTooltip!.text ?? "…"}
+                                </span>
+                              )}
                             </span>
                           ) : token}
                         </span>
