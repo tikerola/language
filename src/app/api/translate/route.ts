@@ -68,7 +68,7 @@ Rules:
 - Test different aspects of the topic
 
 Reply with JSON only:
-{"exercises":[{"sentence":"<German sentence with ___ for the blank>","answer":"<correct word or phrase>","hint":"<short grammar label in English, e.g. 'dative article (masculine)'>"}]}`,
+{"exercises":[{"sentence":"<German sentence with ___ for the blank>","answer":"<correct word or phrase>","hint":"<short grammar label in English, e.g. 'dative article (masculine)'>","nominative":"<base/nominative form of the answer word so the learner knows what word to look for — e.g. if answer is 'dem' write 'der'; if answer is 'einen' write 'ein'; if answer is 'ging' write 'gehen'; if answer is 'schönen' write 'schön'; if answer is a whole phrase just repeat it>"}]}`,
     user: (topic: string) => `Grammar topic: ${topic}`,
   },
   grammar_check: {

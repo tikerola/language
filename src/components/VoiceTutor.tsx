@@ -14,6 +14,7 @@ interface GrammarExercise {
   sentence: string;
   answer: string;
   hint: string;
+  nominative?: string;
 }
 
 interface VocabWord {
@@ -94,7 +95,7 @@ function formatStoryDate(ts: number): string {
   return new Date(ts).toLocaleDateString("en-GB", { day: "numeric", month: "short" });
 }
 
-const VERSION = "1.0.15";
+const VERSION = "1.0.17";
 
 // Find the character position N words before `charPos` in `text`.
 function rewindPosition(text: string, charPos: number, wordsBack: number): number {
@@ -299,7 +300,7 @@ export default function VoiceTutor() {
 
     if (modeRef.current === "grammar") {
       setPhase("idle");
-      const delay = grammarLastCorrectRef.current ? 600 : 3000;
+      const delay = grammarLastCorrectRef.current ? 200 : 3000;
       setTimeout(() => {
         const next = grammarIndexRef.current + 1;
         if (next >= grammarExercisesRef.current.length) {
@@ -310,6 +311,7 @@ export default function VoiceTutor() {
           grammarIndexRef.current = next;
           setGrammarIndex(next);
           setGrammarResult(null);
+          setEcho("");
           setPhase("listening");
           restart();
         }
@@ -475,6 +477,7 @@ export default function VoiceTutor() {
         grammarLastCorrectRef.current = correct;
         setGrammarResult({ correct, correctAnswer: currentExercise.answer });
         setPhase("speaking");
+        setEcho(correct ? "Richtig!" : currentExercise.answer);
         speak(correct ? "Richtig!" : currentExercise.answer);
         return;
       }
@@ -1376,7 +1379,14 @@ export default function VoiceTutor() {
               </div>
 
               <div className="w-full text-center space-y-3">
-                <p className="text-xs text-gray-600 tracking-wide">{grammarExercises[grammarIndex].hint}</p>
+                <div className="space-y-1">
+                  <p className="text-xs text-gray-600 tracking-wide">{grammarExercises[grammarIndex].hint}</p>
+                  {grammarExercises[grammarIndex].nominative && (
+                    <p className="text-xs text-gray-500">
+                      base form: <span className="text-gray-300 font-medium">{grammarExercises[grammarIndex].nominative}</span>
+                    </p>
+                  )}
+                </div>
                 <p className="text-white text-2xl font-medium leading-relaxed">
                   {grammarExercises[grammarIndex].sentence.split("___").map((part, i, arr) => (
                     <span key={i}>
