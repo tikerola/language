@@ -44,6 +44,20 @@ Return JSON only: {"correct":true|false}`,
     user: (finnish: string, german: string, answer: string) =>
       `Finnish word: ${finnish}\nCorrect German: ${german}\nStudent answer: ${answer}`,
   },
+  word_translate: {
+    system: `Given a German word (possibly inflected), return its canonical dictionary form and Finnish translation.
+- Nouns: singular nominative with article (der/die/das)
+- Verbs: infinitive form
+- Adjectives/adverbs: base form
+Return JSON only: {"german":"<canonical form>","finnish":"<Finnish translation>"}`,
+    user: (word: string) => `German word: ${word}`,
+  },
+  story_generate: {
+    system: `You are a German language teacher. Write a short, engaging story in German (A2/B1 level) based on the given subject.
+The story should be 3–5 paragraphs, use simple but natural German, and be interesting to read.
+Reply with JSON only: {"title":"<story title in German>","story":"<the full story in German, paragraphs separated by \\n\\n>"}`,
+    user: (subject: string) => `Subject: ${subject}`,
+  },
 };
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
@@ -72,6 +86,32 @@ export async function POST(req: NextRequest) {
       const result = await makeModel().generateContent([
         { text: prompt.system },
         { text: prompt.user(topic.trim()) },
+      ]);
+      return NextResponse.json(JSON.parse(result.response.text()));
+    }
+
+    if (mode === "word_translate") {
+      const { word } = body;
+      if (!word?.trim()) {
+        return NextResponse.json({ error: "No word provided" }, { status: 400 });
+      }
+      const prompt = PROMPTS.word_translate;
+      const result = await makeModel().generateContent([
+        { text: prompt.system },
+        { text: prompt.user(word.trim()) },
+      ]);
+      return NextResponse.json(JSON.parse(result.response.text()));
+    }
+
+    if (mode === "story_generate") {
+      const { subject } = body;
+      if (!subject?.trim()) {
+        return NextResponse.json({ error: "No subject provided" }, { status: 400 });
+      }
+      const prompt = PROMPTS.story_generate;
+      const result = await makeModel().generateContent([
+        { text: prompt.system },
+        { text: prompt.user(subject.trim()) },
       ]);
       return NextResponse.json(JSON.parse(result.response.text()));
     }

@@ -5,8 +5,9 @@ import { useSpeechRecognition } from "@/hooks/useSpeechRecognition";
 import { useSpeechSynthesis } from "@/hooks/useSpeechSynthesis";
 
 type Phase = "idle" | "listening" | "processing" | "speaking" | "error";
-type Mode = "english" | "german" | "discussion" | "vocabulary" | "radio";
+type Mode = "english" | "german" | "discussion" | "vocabulary" | "radio" | "story";
 type VocabSubphase = "category" | "loading" | "learning" | "quiz" | "complete";
+type StorySubphase = "input" | "loading" | "reading";
 
 interface VocabWord {
   finnish: string;
@@ -27,6 +28,7 @@ const MODE_LANG: Record<Mode, string> = {
   discussion: "de-DE",
   vocabulary: "de-DE",
   radio: "de-DE",
+  story: "de-DE",
 };
 
 const RADIO_STATIONS = [
@@ -91,6 +93,15 @@ export default function VoiceTutor() {
   const [vocabQuizWord, setVocabQuizWord] = useState<VocabWord | null>(null);
   const [vocabLastResult, setVocabLastResult] = useState<{ correct: boolean; correctWord: string } | null>(null);
 
+  // Story state
+  const [storySubphase, setStorySubphase] = useState<StorySubphase>("input");
+  const [storySubjectInput, setStorySubjectInput] = useState("");
+  const [storyTitle, setStoryTitle] = useState("");
+  const [storyText, setStoryText] = useState("");
+  const [isStoryPlaying, setIsStoryPlaying] = useState(false);
+  const [storySelectedKeys, setStorySelectedKeys] = useState<Set<string>>(new Set());
+  const [storyVocabWords, setStoryVocabWords] = useState<VocabWord[]>([]);
+
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const repeatModeRef = useRef(false);
   const hasRepeatedRef = useRef(false);
@@ -102,6 +113,10 @@ export default function VoiceTutor() {
   const vocabSubphaseRef = useRef<VocabSubphase>("category");
   const vocabWordsRef = useRef<VocabWord[]>([]);
   const vocabQuizWordRef = useRef<VocabWord | null>(null);
+
+  // Story refs
+  const storySelectedKeysRef = useRef<Set<string>>(new Set());
+  const storyKeyToGermanRef = useRef<Map<string, string>>(new Map());
 
   useEffect(() => { modeRef.current = mode; }, [mode]);
   useEffect(() => { repeatModeRef.current = repeatMode; }, [repeatMode]);
@@ -166,6 +181,11 @@ export default function VoiceTutor() {
         onSpeak?.();
         speak(text, 1.0, lang ?? "de-DE");
       }, delay);
+      return;
+    }
+
+    if (modeRef.current === "story") {
+      setIsStoryPlaying(false);
       return;
     }
 
@@ -357,6 +377,65 @@ export default function VoiceTutor() {
     clearTTSQueue();
   }, [clearTTSQueue]);
 
+  const resetStoryState = useCallback(() => {
+    setStorySubphase("input");
+    setStorySubjectInput("");
+    setStoryTitle("");
+    setStoryText("");
+    setIsStoryPlaying(false);
+    storySelectedKeysRef.current = new Set();
+    storyKeyToGermanRef.current = new Map();
+    setStorySelectedKeys(new Set());
+  }, []);
+
+  const generateStory = useCallback(async (subject: string) => {
+    setStorySubphase("loading");
+    try {
+      const res = await fetch("/api/translate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: "story_generate", subject }),
+      });
+      if (!res.ok) throw new Error("Failed");
+      const data = await res.json();
+      setStoryTitle(data.title ?? "");
+      setStoryText(data.story ?? "");
+      setStorySubphase("reading");
+    } catch {
+      setStorySubphase("input");
+    }
+  }, []);
+
+  const startLearningPhase = useCallback((words: VocabWord[]) => {
+    if (words.length === 0) return;
+    vocabSubphaseRef.current = "learning";
+    setVocabSubphase("learning");
+    setPhase("speaking");
+
+    const queue: TTSItem[] = [];
+    words.forEach((word, i) => {
+      queue.push({
+        text: word.german,
+        delay: 1500,
+        lang: "de-DE",
+        onSpeak: () => setVocabLearningDisplay({ finnish: word.finnish, german: word.german, showGerman: true, index: i }),
+      });
+      if (i < words.length - 1) {
+        queue.push({
+          text: words[i + 1].finnish,
+          delay: 800,
+          lang: "fi-FI",
+          onSpeak: () => setVocabLearningDisplay({ finnish: words[i + 1].finnish, german: words[i + 1].german, showGerman: false, index: i + 1 }),
+        });
+      }
+    });
+    ttsQueueRef.current = queue;
+
+    const first = words[0];
+    setVocabLearningDisplay({ finnish: first.finnish, german: first.german, showGerman: false, index: 0 });
+    speak(first.finnish, 1.0, "fi-FI");
+  }, [speak]);
+
   const generateVocabulary = useCallback(async (category: string) => {
     setVocabSubphase("loading");
     vocabSubphaseRef.current = "loading";
@@ -381,42 +460,81 @@ export default function VoiceTutor() {
 
       vocabWordsRef.current = words;
       setVocabWords(words);
-
-      if (words.length === 0) return;
-
-      vocabSubphaseRef.current = "learning";
-      setVocabSubphase("learning");
-      setPhase("speaking");
-
-      // Queue: German(word0, 1500ms) → Finnish(word1, 800ms) → German(word1, 1500ms) → ...
-      // Speak Finnish of word0 immediately to kick off the sequence.
-      const queue: TTSItem[] = [];
-      words.forEach((word, i) => {
-        queue.push({
-          text: word.german,
-          delay: 1500,
-          lang: "de-DE",
-          onSpeak: () => setVocabLearningDisplay({ finnish: word.finnish, german: word.german, showGerman: true, index: i }),
-        });
-        if (i < words.length - 1) {
-          queue.push({
-            text: words[i + 1].finnish,
-            delay: 800,
-            lang: "fi-FI",
-            onSpeak: () => setVocabLearningDisplay({ finnish: words[i + 1].finnish, german: words[i + 1].german, showGerman: false, index: i + 1 }),
-          });
-        }
-      });
-      ttsQueueRef.current = queue;
-
-      const first = words[0];
-      setVocabLearningDisplay({ finnish: first.finnish, german: first.german, showGerman: false, index: 0 });
-      speak(first.finnish, 1.0, "fi-FI");
+      startLearningPhase(words);
     } catch {
       setVocabSubphase("category");
       vocabSubphaseRef.current = "category";
     }
-  }, [cancel, speak]);
+  }, [cancel, startLearningPhase]);
+
+  const startStoryVocab = useCallback(() => {
+    const words = storyVocabWords.map(w => ({
+      ...w,
+      consecutiveCorrect: 0,
+      attempts: 0,
+      correctAttempts: 0,
+    }));
+    vocabWordsRef.current = words;
+    setVocabWords(words);
+    setVocabCategory("Latest story words");
+    cancel();
+    startLearningPhase(words);
+  }, [storyVocabWords, cancel, startLearningPhase]);
+
+  const handleWordClick = useCallback(async (word: string) => {
+    const key = word.toLowerCase();
+
+    if (storySelectedKeysRef.current.has(key)) {
+      // Deselect: remove highlight and remove from vocab list
+      storySelectedKeysRef.current.delete(key);
+      setStorySelectedKeys(new Set(storySelectedKeysRef.current));
+      const canonical = storyKeyToGermanRef.current.get(key);
+      if (canonical) {
+        storyKeyToGermanRef.current.delete(key);
+        setStoryVocabWords(prev => prev.filter(w => w.german.toLowerCase() !== canonical));
+      }
+      return;
+    }
+
+    storySelectedKeysRef.current.add(key);
+    setStorySelectedKeys(new Set(storySelectedKeysRef.current));
+
+    try {
+      const res = await fetch("/api/translate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: "word_translate", word }),
+      });
+      if (!res.ok) throw new Error();
+      const data = await res.json();
+      storyKeyToGermanRef.current.set(key, data.german.toLowerCase());
+      const vocabWord: VocabWord = {
+        german: data.german,
+        finnish: data.finnish,
+        consecutiveCorrect: 0,
+        attempts: 0,
+        correctAttempts: 0,
+      };
+      setStoryVocabWords(prev => {
+        if (prev.some(w => w.german.toLowerCase() === data.german.toLowerCase())) return prev;
+        return [...prev, vocabWord];
+      });
+    } catch {
+      storySelectedKeysRef.current.delete(key);
+      setStorySelectedKeys(new Set(storySelectedKeysRef.current));
+    }
+  }, []);
+
+  const toggleStoryPlay = useCallback(() => {
+    if (isStoryPlaying) {
+      cancel();
+      clearTTSQueue();
+      setIsStoryPlaying(false);
+    } else {
+      setIsStoryPlaying(true);
+      speak(storyText, 1.0, "de-DE");
+    }
+  }, [isStoryPlaying, cancel, clearTTSQueue, speak, storyText]);
 
   const handleStart = useCallback(() => {
     setSpoken("");
@@ -451,6 +569,7 @@ export default function VoiceTutor() {
       setSpoken("");
       setResult(null);
       lastDiscussionReplyRef.current = "";
+      setIsStoryPlaying(false);
       resetVocabState();
     },
     [phase, stop, cancel, clearTTSQueue, resetVocabState]
@@ -459,7 +578,7 @@ export default function VoiceTutor() {
   // Space bar to start/stop (non-radio, non-vocabulary)
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.code === "Space" && e.target === document.body && mode !== "radio" && mode !== "vocabulary") {
+      if (e.code === "Space" && e.target === document.body && mode !== "radio" && mode !== "vocabulary" && mode !== "story") {
         e.preventDefault();
         if (phase === "idle" || phase === "error") handleStart();
         else handleStop();
@@ -514,6 +633,7 @@ export default function VoiceTutor() {
           ["discussion", "DE chat"],
           ["vocabulary", "Vocabulary"],
           ["radio", "Radio"],
+          ["story", "Story"],
         ] as [Mode, string][]).map(([m, label]) => (
           <button
             key={m}
@@ -588,6 +708,18 @@ export default function VoiceTutor() {
           {vocabSubphase === "category" && (
             <div className="flex flex-col gap-6">
               <p className="text-center text-gray-400 text-sm tracking-wide">Choose a category</p>
+
+              {storyVocabWords.length > 0 && (
+                <div>
+                  <p className="text-xs text-gray-600 uppercase tracking-widest mb-2">From stories</p>
+                  <button
+                    onClick={startStoryVocab}
+                    className="px-4 py-2 rounded-full text-xs font-semibold bg-yellow-600 text-white hover:bg-yellow-500 transition-colors"
+                  >
+                    Latest story words · {storyVocabWords.length} word{storyVocabWords.length !== 1 ? "s" : ""}
+                  </button>
+                </div>
+              )}
 
               {VOCAB_CATEGORIES.map(({ group, items }) => (
                 <div key={group}>
@@ -761,6 +893,115 @@ export default function VoiceTutor() {
                 className="mt-2 px-8 py-3 rounded-full bg-white text-gray-900 text-sm font-semibold hover:bg-gray-100 transition-colors"
               >
                 New Session
+              </button>
+            </div>
+          )}
+        </div>
+
+      ) : mode === "story" ? (
+        /* ── Story mode ── */
+        <div className="w-full max-w-lg">
+          {storySubphase === "input" && (
+            <div className="flex flex-col gap-4">
+              <p className="text-center text-gray-400 text-sm tracking-wide">Enter a subject for a German story</p>
+              <input
+                type="text"
+                placeholder="e.g. a dog and a cat, summer in Berlin..."
+                value={storySubjectInput}
+                onChange={(e) => setStorySubjectInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && storySubjectInput.trim()) {
+                    generateStory(storySubjectInput.trim());
+                  }
+                }}
+                className="bg-gray-800 text-white text-sm px-4 py-3 rounded-full outline-none placeholder-gray-600 focus:ring-1 focus:ring-gray-500"
+              />
+              <button
+                disabled={!storySubjectInput.trim()}
+                onClick={() => generateStory(storySubjectInput.trim())}
+                className={`py-3 rounded-full text-sm font-semibold tracking-wide transition-colors
+                  ${storySubjectInput.trim()
+                    ? "bg-white text-gray-900 hover:bg-gray-100"
+                    : "bg-gray-800 text-gray-600 cursor-not-allowed"
+                  }`}
+              >
+                Generate Story
+              </button>
+            </div>
+          )}
+
+          {storySubphase === "loading" && (
+            <div className="flex flex-col items-center gap-4">
+              <svg className="w-10 h-10 animate-spin text-gray-500" viewBox="0 0 24 24" fill="none">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3"/>
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"/>
+              </svg>
+              <p className="text-gray-500 text-sm tracking-wide">Generating story...</p>
+            </div>
+          )}
+
+          {storySubphase === "reading" && (
+            <div className="flex flex-col gap-5">
+              <div className="flex items-start justify-between gap-4">
+                {storyTitle && (
+                  <h2 className="text-white text-2xl font-bold">{storyTitle}</h2>
+                )}
+                <button
+                  onClick={toggleStoryPlay}
+                  className={`flex-shrink-0 w-11 h-11 rounded-full flex items-center justify-center transition-colors
+                    ${isStoryPlaying ? "bg-blue-600 hover:bg-blue-700" : "bg-gray-700 hover:bg-gray-600"}`}
+                >
+                  {isStoryPlaying ? (
+                    <svg className="w-4 h-4 fill-white" viewBox="0 0 24 24">
+                      <rect x="6" y="5" width="4" height="14" rx="1"/>
+                      <rect x="14" y="5" width="4" height="14" rx="1"/>
+                    </svg>
+                  ) : (
+                    <svg className="w-4 h-4 fill-white translate-x-0.5" viewBox="0 0 24 24">
+                      <path d="M8 5v14l11-7z"/>
+                    </svg>
+                  )}
+                </button>
+              </div>
+
+              <p className="text-xs text-gray-600 uppercase tracking-widest">Click words to save for vocabulary</p>
+
+              <div className="text-gray-300 text-base leading-relaxed space-y-4 select-text">
+                {storyText.split("\n\n").map((para, pi) => (
+                  <p key={pi}>
+                    {para.split(" ").map((token, wi) => {
+                      const clean = token.replace(/[^a-zA-ZäöüÄÖÜß]/g, "");
+                      const isSelected = clean ? storySelectedKeys.has(clean.toLowerCase()) : false;
+                      return (
+                        <span key={wi}>
+                          {wi > 0 && " "}
+                          {clean ? (
+                            <span
+                              onClick={() => handleWordClick(clean)}
+                              className={`cursor-pointer rounded px-0.5 transition-colors hover:bg-gray-700
+                                ${isSelected ? "text-yellow-400" : ""}`}
+                            >
+                              {token}
+                            </span>
+                          ) : token}
+                        </span>
+                      );
+                    })}
+                  </p>
+                ))}
+              </div>
+
+              {storyVocabWords.length > 0 && (
+                <p className="text-xs text-gray-500 text-center pt-1">
+                  {storyVocabWords.length} word{storyVocabWords.length !== 1 ? "s" : ""} saved · go to Vocabulary to quiz them
+                </p>
+              )}
+
+              <button
+                onClick={resetStoryState}
+                className="mt-2 py-3 rounded-full bg-gray-800 text-gray-300 text-sm font-semibold hover:bg-gray-700 transition-colors"
+              >
+                New Story
               </button>
             </div>
           )}
