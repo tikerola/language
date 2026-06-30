@@ -67,7 +67,30 @@ interface TTSItem {
   onSpeak?: () => void;
 }
 
-const VERSION = "1.0.2";
+interface StoryEntry {
+  title: string;
+  text: string;
+  subject: string;
+  createdAt: number;
+}
+
+function formatStoryDate(ts: number): string {
+  return new Date(ts).toLocaleDateString("en-GB", { day: "numeric", month: "short" });
+}
+
+const VERSION = "1.0.9";
+
+// Find the character position N words before `charPos` in `text`.
+function rewindPosition(text: string, charPos: number, wordsBack: number): number {
+  const wordStarts: number[] = [];
+  const re = /\S+/g;
+  let m;
+  while ((m = re.exec(text)) !== null && m.index < charPos) {
+    wordStarts.push(m.index);
+  }
+  const target = wordStarts.length - wordsBack;
+  return target > 0 ? wordStarts[target] : 0;
+}
 
 export default function VoiceTutor() {
   const [phase, setPhase] = useState<Phase>("idle");
@@ -88,7 +111,7 @@ export default function VoiceTutor() {
   const [vocabCustomInput, setVocabCustomInput] = useState("");
   const [vocabWords, setVocabWords] = useState<VocabWord[]>([]);
   const [vocabLearningDisplay, setVocabLearningDisplay] = useState<{
-    finnish: string; german: string; showGerman: boolean; index: number;
+    finnish: string; german: string; showTranslation: boolean; index: number;
   } | null>(null);
   const [vocabQuizWord, setVocabQuizWord] = useState<VocabWord | null>(null);
   const [vocabLastResult, setVocabLastResult] = useState<{ correct: boolean; correctWord: string } | null>(null);
@@ -101,6 +124,7 @@ export default function VoiceTutor() {
   const [isStoryPlaying, setIsStoryPlaying] = useState(false);
   const [storySelectedKeys, setStorySelectedKeys] = useState<Set<string>>(new Set());
   const [storyVocabWords, setStoryVocabWords] = useState<VocabWord[]>([]);
+  const [storyArchive, setStoryArchive] = useState<StoryEntry[]>([]);
 
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const repeatModeRef = useRef(false);
@@ -117,6 +141,10 @@ export default function VoiceTutor() {
   // Story refs
   const storySelectedKeysRef = useRef<Set<string>>(new Set());
   const storyKeyToGermanRef = useRef<Map<string, string>>(new Map());
+  const storyPlayOffsetRef = useRef(0);
+  const storyCharIndexRef = useRef(0);
+  const storyPlayStartTimeRef = useRef(0);
+  const storyUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
 
   useEffect(() => { modeRef.current = mode; }, [mode]);
   useEffect(() => { repeatModeRef.current = repeatMode; }, [repeatMode]);
@@ -124,6 +152,13 @@ export default function VoiceTutor() {
 
   const ttsQueueRef = useRef<TTSItem[]>([]);
   const clearTTSQueue = useCallback(() => { ttsQueueRef.current = []; }, []);
+
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem("story_archive");
+      if (saved) setStoryArchive(JSON.parse(saved));
+    } catch {}
+  }, []);
 
   // Radio audio element lifecycle
   useEffect(() => {
@@ -185,8 +220,7 @@ export default function VoiceTutor() {
     }
 
     if (modeRef.current === "story") {
-      setIsStoryPlaying(false);
-      return;
+      return; // story manages its own utterance via storyUtteranceRef
     }
 
     if (modeRef.current === "vocabulary") {
@@ -225,7 +259,11 @@ export default function VoiceTutor() {
     }
   }, []);
 
-  const { speak, cancel } = useSpeechSynthesis({ onEnd: handleTTSEnd });
+  const handleBoundary = useCallback((charIndex: number) => {
+    storyCharIndexRef.current = charIndex;
+  }, []);
+
+  const { speak, cancel } = useSpeechSynthesis({ onEnd: handleTTSEnd, onBoundary: handleBoundary });
 
   const handleTranscript = useCallback(
     async (transcript: string) => {
@@ -378,6 +416,13 @@ export default function VoiceTutor() {
   }, [clearTTSQueue]);
 
   const resetStoryState = useCallback(() => {
+    if (storyUtteranceRef.current) {
+      storyUtteranceRef.current.onend = null;
+      storyUtteranceRef.current.onboundary = null;
+      storyUtteranceRef.current.onerror = null;
+      storyUtteranceRef.current = null;
+      window.speechSynthesis.cancel();
+    }
     setStorySubphase("input");
     setStorySubjectInput("");
     setStoryTitle("");
@@ -385,7 +430,11 @@ export default function VoiceTutor() {
     setIsStoryPlaying(false);
     storySelectedKeysRef.current = new Set();
     storyKeyToGermanRef.current = new Map();
+    storyPlayOffsetRef.current = 0;
+    storyCharIndexRef.current = 0;
+    storyPlayStartTimeRef.current = 0;
     setStorySelectedKeys(new Set());
+    setStoryVocabWords([]);
   }, []);
 
   const generateStory = useCallback(async (subject: string) => {
@@ -398,12 +447,44 @@ export default function VoiceTutor() {
       });
       if (!res.ok) throw new Error("Failed");
       const data = await res.json();
-      setStoryTitle(data.title ?? "");
-      setStoryText(data.story ?? "");
+      const title = data.title ?? "";
+      const text = data.story ?? "";
+      setStoryTitle(title);
+      setStoryText(text);
       setStorySubphase("reading");
+      if (title && text) {
+        const entry: StoryEntry = { title, text, subject, createdAt: Date.now() };
+        setStoryArchive(prev => {
+          const updated = [entry, ...prev].slice(0, 20);
+          try { localStorage.setItem("story_archive", JSON.stringify(updated)); } catch {}
+          return updated;
+        });
+      }
     } catch {
       setStorySubphase("input");
     }
+  }, []);
+
+  const loadArchivedStory = useCallback((entry: StoryEntry) => {
+    if (storyUtteranceRef.current) {
+      storyUtteranceRef.current.onend = null;
+      storyUtteranceRef.current.onboundary = null;
+      storyUtteranceRef.current.onerror = null;
+      storyUtteranceRef.current = null;
+      window.speechSynthesis.cancel();
+    }
+    storySelectedKeysRef.current = new Set();
+    storyKeyToGermanRef.current = new Map();
+    storyPlayOffsetRef.current = 0;
+    storyCharIndexRef.current = 0;
+    storyPlayStartTimeRef.current = 0;
+    setStorySelectedKeys(new Set());
+    setStoryVocabWords([]);
+    setIsStoryPlaying(false);
+    setStorySubjectInput(entry.subject);
+    setStoryTitle(entry.title);
+    setStoryText(entry.text);
+    setStorySubphase("reading");
   }, []);
 
   const startLearningPhase = useCallback((words: VocabWord[]) => {
@@ -414,26 +495,28 @@ export default function VoiceTutor() {
 
     const queue: TTSItem[] = [];
     words.forEach((word, i) => {
+      // Reveal the Finnish translation after speaking German
       queue.push({
-        text: word.german,
+        text: word.finnish,
         delay: 1500,
-        lang: "de-DE",
-        onSpeak: () => setVocabLearningDisplay({ finnish: word.finnish, german: word.german, showGerman: true, index: i }),
+        lang: "fi-FI",
+        onSpeak: () => setVocabLearningDisplay({ finnish: word.finnish, german: word.german, showTranslation: true, index: i }),
       });
+      // Move to next word, German first
       if (i < words.length - 1) {
         queue.push({
-          text: words[i + 1].finnish,
+          text: words[i + 1].german,
           delay: 800,
-          lang: "fi-FI",
-          onSpeak: () => setVocabLearningDisplay({ finnish: words[i + 1].finnish, german: words[i + 1].german, showGerman: false, index: i + 1 }),
+          lang: "de-DE",
+          onSpeak: () => setVocabLearningDisplay({ finnish: words[i + 1].finnish, german: words[i + 1].german, showTranslation: false, index: i + 1 }),
         });
       }
     });
     ttsQueueRef.current = queue;
 
     const first = words[0];
-    setVocabLearningDisplay({ finnish: first.finnish, german: first.german, showGerman: false, index: 0 });
-    speak(first.finnish, 1.0, "fi-FI");
+    setVocabLearningDisplay({ finnish: first.finnish, german: first.german, showTranslation: false, index: 0 });
+    speak(first.german, 1.0, "de-DE");
   }, [speak]);
 
   const generateVocabulary = useCallback(async (category: string) => {
@@ -527,14 +610,62 @@ export default function VoiceTutor() {
 
   const toggleStoryPlay = useCallback(() => {
     if (isStoryPlaying) {
-      cancel();
-      clearTTSQueue();
+      // Use boundary charIndex when available; fall back to elapsed-time estimate.
+      // Chrome often doesn't fire boundary events for cloud voices, so charIndex stays 0.
+      const elapsed = Date.now() - storyPlayStartTimeRef.current;
+      const charPos = storyCharIndexRef.current > 0
+        ? storyCharIndexRef.current
+        : Math.floor(elapsed * 0.015); // ~15 chars/sec for German TTS at rate 1.0
+      const absolutePos = storyPlayOffsetRef.current + charPos;
+      storyPlayOffsetRef.current = rewindPosition(storyText, absolutePos, 6);
+      storyCharIndexRef.current = 0;
+      if (storyUtteranceRef.current) {
+        storyUtteranceRef.current.onend = null;
+        storyUtteranceRef.current.onboundary = null;
+        storyUtteranceRef.current.onerror = null;
+        storyUtteranceRef.current = null;
+      }
+      window.speechSynthesis.cancel();
       setIsStoryPlaying(false);
     } else {
+      storyCharIndexRef.current = 0;
+      storyPlayStartTimeRef.current = Date.now();
+      if (storyUtteranceRef.current) {
+        storyUtteranceRef.current.onend = null;
+        storyUtteranceRef.current.onboundary = null;
+        storyUtteranceRef.current.onerror = null;
+      }
+      const text = storyText.slice(storyPlayOffsetRef.current);
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.lang = "de-DE";
+      utterance.rate = 1.0;
+      const voices = window.speechSynthesis.getVoices();
+      const germanVoice =
+        voices.find(v => v.lang === "de-DE" && v.localService) ||
+        voices.find(v => v.lang.startsWith("de")) ||
+        null;
+      if (germanVoice) utterance.voice = germanVoice;
+      utterance.onboundary = (e) => { storyCharIndexRef.current = e.charIndex; };
+      utterance.onend = () => {
+        storyPlayOffsetRef.current = 0;
+        storyCharIndexRef.current = 0;
+        storyPlayStartTimeRef.current = 0;
+        storyUtteranceRef.current = null;
+        setIsStoryPlaying(false);
+      };
+      utterance.onerror = () => {
+        storyPlayOffsetRef.current = 0;
+        storyCharIndexRef.current = 0;
+        storyPlayStartTimeRef.current = 0;
+        storyUtteranceRef.current = null;
+        setIsStoryPlaying(false);
+      };
+      storyUtteranceRef.current = utterance;
+      window.speechSynthesis.cancel();
+      window.speechSynthesis.speak(utterance);
       setIsStoryPlaying(true);
-      speak(storyText, 1.0, "de-DE");
     }
-  }, [isStoryPlaying, cancel, clearTTSQueue, speak, storyText]);
+  }, [isStoryPlaying, storyText]);
 
   const handleStart = useCallback(() => {
     setSpoken("");
@@ -555,6 +686,12 @@ export default function VoiceTutor() {
 
   const handleModeChange = useCallback(
     (next: Mode) => {
+      if (storyUtteranceRef.current) {
+        storyUtteranceRef.current.onend = null;
+        storyUtteranceRef.current.onboundary = null;
+        storyUtteranceRef.current.onerror = null;
+        storyUtteranceRef.current = null;
+      }
       if (phase !== "idle") {
         stop();
         cancel();
@@ -787,10 +924,10 @@ export default function VoiceTutor() {
 
               <div className="text-center">
                 <p className="text-white text-5xl font-bold tracking-wide mb-6">
-                  {vocabLearningDisplay.finnish}
+                  {vocabLearningDisplay.german}
                 </p>
-                <div className={`transition-opacity duration-500 ${vocabLearningDisplay.showGerman ? "opacity-100" : "opacity-0"}`}>
-                  <p className="text-gray-400 text-2xl">{vocabLearningDisplay.german}</p>
+                <div className={`transition-opacity duration-500 ${vocabLearningDisplay.showTranslation ? "opacity-100" : "opacity-0"}`}>
+                  <p className="text-gray-400 text-2xl">{vocabLearningDisplay.finnish}</p>
                 </div>
               </div>
 
@@ -927,6 +1064,24 @@ export default function VoiceTutor() {
               >
                 Generate Story
               </button>
+
+              {storyArchive.length > 0 && (
+                <div className="mt-2 flex flex-col gap-2">
+                  <p className="text-xs text-gray-600 uppercase tracking-widest">Past stories</p>
+                  <div className="flex flex-col gap-2 max-h-96 overflow-y-auto pr-1">
+                    {storyArchive.map((entry) => (
+                      <button
+                        key={entry.createdAt}
+                        onClick={() => loadArchivedStory(entry)}
+                        className="text-left px-4 py-3 bg-gray-800 rounded-xl hover:bg-gray-700 transition-colors"
+                      >
+                        <p className="text-white text-sm font-medium leading-snug">{entry.title}</p>
+                        <p className="text-gray-500 text-xs mt-0.5">{entry.subject} · {formatStoryDate(entry.createdAt)}</p>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 

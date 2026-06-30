@@ -4,9 +4,10 @@ import { useCallback, useRef } from "react";
 
 interface Options {
   onEnd?: () => void;
+  onBoundary?: (charIndex: number) => void;
 }
 
-export function useSpeechSynthesis({ onEnd }: Options = {}) {
+export function useSpeechSynthesis({ onEnd, onBoundary }: Options = {}) {
   const deVoiceRef = useRef<SpeechSynthesisVoice | null>(null);
 
   const loadDeVoice = useCallback(() => {
@@ -35,10 +36,11 @@ export function useSpeechSynthesis({ onEnd }: Options = {}) {
 
       utterance.onend = () => onEnd?.();
       utterance.onerror = () => onEnd?.();
+      utterance.onboundary = (e) => onBoundary?.(e.charIndex);
 
       window.speechSynthesis.speak(utterance);
     },
-    [loadDeVoice, onEnd]
+    [loadDeVoice, onEnd, onBoundary]
   );
 
   const cancel = useCallback(() => {
