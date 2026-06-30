@@ -5,9 +5,16 @@ import { useSpeechRecognition } from "@/hooks/useSpeechRecognition";
 import { useSpeechSynthesis } from "@/hooks/useSpeechSynthesis";
 
 type Phase = "idle" | "listening" | "processing" | "speaking" | "error";
-type Mode = "english" | "german" | "discussion" | "vocabulary" | "radio" | "story";
+type Mode = "english" | "german" | "discussion" | "vocabulary" | "radio" | "story" | "grammar";
 type VocabSubphase = "category" | "loading" | "learning" | "quiz" | "complete";
 type StorySubphase = "input" | "loading" | "reading";
+type GrammarSubphase = "category" | "loading" | "drilling" | "complete";
+
+interface GrammarExercise {
+  sentence: string;
+  answer: string;
+  hint: string;
+}
 
 interface VocabWord {
   finnish: string;
@@ -29,6 +36,7 @@ const MODE_LANG: Record<Mode, string> = {
   vocabulary: "de-DE",
   radio: "de-DE",
   story: "de-DE",
+  grammar: "de-DE",
 };
 
 const RADIO_STATIONS = [
@@ -60,6 +68,12 @@ const VOCAB_CATEGORIES = [
   { group: "Frequency", items: ["Top 100 Nouns", "Top 100 Verbs", "Top 100 Adjectives", "Top 100 Adverbs", "Top 100 Everyday Phrases"] },
 ];
 
+const GRAMMAR_TOPICS = [
+  { group: "Articles & Cases", items: ["Articles (der/die/das)", "Accusative case", "Dative case", "Adjective endings"] },
+  { group: "Verbs", items: ["Present tense", "Perfect tense", "Modal verbs", "Separable verbs", "Imperative"] },
+  { group: "Sentences", items: ["Word order", "Subordinate clauses", "Negation", "Question formation"] },
+];
+
 interface TTSItem {
   text: string;
   delay: number;
@@ -80,7 +94,7 @@ function formatStoryDate(ts: number): string {
   return new Date(ts).toLocaleDateString("en-GB", { day: "numeric", month: "short" });
 }
 
-const VERSION = "1.0.14";
+const VERSION = "1.0.15";
 
 // Find the character position N words before `charPos` in `text`.
 function rewindPosition(text: string, charPos: number, wordsBack: number): number {
@@ -136,6 +150,15 @@ export default function VoiceTutor() {
   const [storyArchive, setStoryArchive] = useState<StoryEntry[]>([]);
   const [storyTooltip, setStoryTooltip] = useState<{ key: string; text: string | null } | null>(null);
 
+  // Grammar state
+  const [grammarSubphase, setGrammarSubphase] = useState<GrammarSubphase>("category");
+  const [grammarTopic, setGrammarTopic] = useState("");
+  const [grammarCustomInput, setGrammarCustomInput] = useState("");
+  const [grammarExercises, setGrammarExercises] = useState<GrammarExercise[]>([]);
+  const [grammarIndex, setGrammarIndex] = useState(0);
+  const [grammarResult, setGrammarResult] = useState<{ correct: boolean; correctAnswer: string } | null>(null);
+  const [grammarScore, setGrammarScore] = useState(0);
+
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const repeatModeRef = useRef(false);
   const hasRepeatedRef = useRef(false);
@@ -157,6 +180,13 @@ export default function VoiceTutor() {
   const storyCharIndexRef = useRef(0);
   const storyPlayStartTimeRef = useRef(0);
   const storyUtteranceRef = useRef<SpeechSynthesisUtterance | null>(null);
+
+  // Grammar refs
+  const grammarSubphaseRef = useRef<GrammarSubphase>("category");
+  const grammarExercisesRef = useRef<GrammarExercise[]>([]);
+  const grammarIndexRef = useRef(0);
+  const grammarScoreRef = useRef(0);
+  const grammarLastCorrectRef = useRef(true);
 
   useEffect(() => { modeRef.current = mode; }, [mode]);
   useEffect(() => { repeatModeRef.current = repeatMode; }, [repeatMode]);
@@ -264,6 +294,26 @@ export default function VoiceTutor() {
       // quiz phase TTS done → listen
       setPhase("listening");
       restart();
+      return;
+    }
+
+    if (modeRef.current === "grammar") {
+      setPhase("idle");
+      const delay = grammarLastCorrectRef.current ? 600 : 3000;
+      setTimeout(() => {
+        const next = grammarIndexRef.current + 1;
+        if (next >= grammarExercisesRef.current.length) {
+          grammarSubphaseRef.current = "complete";
+          setGrammarSubphase("complete");
+          setPhase("idle");
+        } else {
+          grammarIndexRef.current = next;
+          setGrammarIndex(next);
+          setGrammarResult(null);
+          setPhase("listening");
+          restart();
+        }
+      }, delay);
       return;
     }
 
@@ -396,6 +446,39 @@ export default function VoiceTutor() {
         return;
       }
 
+      // Grammar drill answer
+      if (mode === "grammar") {
+        if (grammarSubphaseRef.current !== "drilling") return;
+        const currentExercise = grammarExercisesRef.current[grammarIndexRef.current];
+        if (!currentExercise) return;
+
+        const norm = (s: string) => s.trim().toLowerCase().replace(/[.,!?;:-]/g, "");
+        let correct = norm(transcript) === norm(currentExercise.answer);
+
+        if (!correct) {
+          try {
+            const res = await fetch("/api/translate", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                mode: "grammar_check",
+                sentence: currentExercise.sentence,
+                answer: currentExercise.answer,
+                userAnswer: transcript,
+              }),
+            });
+            if (res.ok) correct = (await res.json()).correct ?? false;
+          } catch {}
+        }
+
+        if (correct) { grammarScoreRef.current += 1; setGrammarScore(grammarScoreRef.current); recordActivity(); }
+        grammarLastCorrectRef.current = correct;
+        setGrammarResult({ correct, correctAnswer: currentExercise.answer });
+        setPhase("speaking");
+        speak(correct ? "Richtig!" : currentExercise.answer);
+        return;
+      }
+
       // Other modes
       try {
         const res = await fetch("/api/translate", {
@@ -439,7 +522,7 @@ export default function VoiceTutor() {
     setPhase("error");
   }, []);
 
-  const silenceMs = mode === "vocabulary" ? 1000 : 1500;
+  const silenceMs = mode === "vocabulary" || mode === "grammar" ? 1000 : 1500;
   const resumeDelayMs = 0;
 
   const { start, stop, restart, setEcho } = useSpeechRecognition({
@@ -450,6 +533,49 @@ export default function VoiceTutor() {
     silenceMs,
     resumeDelayMs,
   });
+
+  const resetGrammarState = useCallback(() => {
+    grammarSubphaseRef.current = "category";
+    grammarExercisesRef.current = [];
+    grammarIndexRef.current = 0;
+    grammarScoreRef.current = 0;
+    setGrammarSubphase("category");
+    setGrammarTopic("");
+    setGrammarCustomInput("");
+    setGrammarExercises([]);
+    setGrammarIndex(0);
+    setGrammarResult(null);
+    setGrammarScore(0);
+  }, []);
+
+  const generateGrammar = useCallback(async (topic: string) => {
+    grammarSubphaseRef.current = "loading";
+    setGrammarSubphase("loading");
+    try {
+      const res = await fetch("/api/translate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: "grammar_generate", topic }),
+      });
+      if (!res.ok) throw new Error();
+      const data = await res.json();
+      const exercises: GrammarExercise[] = data.exercises ?? [];
+      grammarExercisesRef.current = exercises;
+      grammarIndexRef.current = 0;
+      grammarScoreRef.current = 0;
+      setGrammarExercises(exercises);
+      setGrammarIndex(0);
+      setGrammarScore(0);
+      setGrammarResult(null);
+      grammarSubphaseRef.current = "drilling";
+      setGrammarSubphase("drilling");
+      setPhase("listening");
+      start();
+    } catch {
+      grammarSubphaseRef.current = "category";
+      setGrammarSubphase("category");
+    }
+  }, [start]);
 
   const resetVocabState = useCallback(() => {
     vocabSubphaseRef.current = "category";
@@ -808,7 +934,8 @@ export default function VoiceTutor() {
     setSpoken("");
     setResult(null);
     if (mode === "vocabulary") resetVocabState();
-  }, [stop, cancel, clearTTSQueue, mode, resetVocabState]);
+    if (mode === "grammar") resetGrammarState();
+  }, [stop, cancel, clearTTSQueue, mode, resetVocabState, resetGrammarState]);
 
   const handleModeChange = useCallback(
     (next: Mode) => {
@@ -834,14 +961,15 @@ export default function VoiceTutor() {
       lastDiscussionReplyRef.current = "";
       setIsStoryPlaying(false);
       resetVocabState();
+      resetGrammarState();
     },
-    [phase, stop, cancel, clearTTSQueue, resetVocabState]
+    [phase, stop, cancel, clearTTSQueue, resetVocabState, resetGrammarState]
   );
 
   // Space bar to start/stop (non-radio, non-vocabulary)
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.code === "Space" && e.target === document.body && mode !== "radio" && mode !== "vocabulary" && mode !== "story") {
+      if (e.code === "Space" && e.target === document.body && mode !== "radio" && mode !== "vocabulary" && mode !== "story" && mode !== "grammar") {
         e.preventDefault();
         if (phase === "idle" || phase === "error") handleStart();
         else handleStop();
@@ -910,6 +1038,7 @@ export default function VoiceTutor() {
           ["german", "DE correction"],
           ["discussion", "DE chat"],
           ["vocabulary", "Vocabulary"],
+          ["grammar", "Grammar"],
           ["radio", "Radio"],
           ["story", "Story"],
         ] as [Mode, string][]).map(([m, label]) => (
@@ -1174,6 +1303,155 @@ export default function VoiceTutor() {
               </button>
             </div>
           )}
+        </div>
+
+      ) : mode === "grammar" ? (
+        /* ── Grammar mode ── */
+        <div className="w-full max-w-lg">
+
+          {grammarSubphase === "category" && (
+            <div className="flex flex-col gap-6">
+              <p className="text-center text-gray-400 text-sm tracking-wide">Choose a grammar topic</p>
+
+              {GRAMMAR_TOPICS.map(({ group, items }) => (
+                <div key={group}>
+                  <p className="text-xs text-gray-600 uppercase tracking-widest mb-2">{group}</p>
+                  <div className="flex flex-wrap gap-2">
+                    {items.map((item) => (
+                      <button
+                        key={item}
+                        onClick={() => setGrammarTopic(item)}
+                        className={`px-3 py-1 rounded-full text-xs font-medium transition-colors
+                          ${grammarTopic === item
+                            ? "bg-white text-gray-900"
+                            : "bg-gray-800 text-gray-400 hover:text-gray-200"
+                          }`}
+                      >
+                        {item}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              ))}
+
+              <div className="flex gap-2 mt-2">
+                <input
+                  type="text"
+                  placeholder="Custom topic..."
+                  value={grammarCustomInput}
+                  onChange={(e) => { setGrammarCustomInput(e.target.value); setGrammarTopic(e.target.value); }}
+                  className="flex-1 bg-gray-800 text-white text-sm px-4 py-2 rounded-full outline-none placeholder-gray-600 focus:ring-1 focus:ring-gray-500"
+                />
+              </div>
+
+              <button
+                disabled={!grammarTopic.trim()}
+                onClick={() => generateGrammar(grammarTopic.trim())}
+                className={`mt-2 py-3 rounded-full text-sm font-semibold tracking-wide transition-colors
+                  ${grammarTopic.trim()
+                    ? "bg-white text-gray-900 hover:bg-gray-100"
+                    : "bg-gray-800 text-gray-600 cursor-not-allowed"
+                  }`}
+              >
+                Start
+              </button>
+            </div>
+          )}
+
+          {grammarSubphase === "loading" && (
+            <div className="flex flex-col items-center gap-4">
+              <svg className="w-10 h-10 animate-spin text-gray-500" viewBox="0 0 24 24" fill="none">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3"/>
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z"/>
+              </svg>
+              <p className="text-gray-500 text-sm tracking-wide">Generating exercises for "{grammarTopic}"...</p>
+            </div>
+          )}
+
+          {grammarSubphase === "drilling" && grammarExercises[grammarIndex] && (
+            <div className="flex flex-col items-center gap-8">
+              <div className="w-full flex justify-between text-xs text-gray-600 uppercase tracking-widest">
+                <span>{grammarTopic}</span>
+                <span>{grammarIndex + 1} / {grammarExercises.length}</span>
+              </div>
+
+              <div className="w-full text-center space-y-3">
+                <p className="text-xs text-gray-600 tracking-wide">{grammarExercises[grammarIndex].hint}</p>
+                <p className="text-white text-2xl font-medium leading-relaxed">
+                  {grammarExercises[grammarIndex].sentence.split("___").map((part, i, arr) => (
+                    <span key={i}>
+                      {part}
+                      {i < arr.length - 1 && (
+                        <span className={`inline-block min-w-12 border-b-2 mx-1 align-bottom
+                          ${grammarResult
+                            ? grammarResult.correct ? "border-green-500 text-green-400" : "border-red-500 text-red-400"
+                            : "border-gray-500"
+                          }`}>
+                          {grammarResult ? grammarResult.correctAnswer : "   "}
+                        </span>
+                      )}
+                    </span>
+                  ))}
+                </p>
+              </div>
+
+              <div className="flex flex-col items-center gap-2">
+                {grammarResult ? (
+                  <div className={`text-center space-y-1 ${grammarResult.correct ? "text-green-400" : "text-red-400"}`}>
+                    <p className="text-2xl">{grammarResult.correct ? "✓" : "✗"}</p>
+                    {!grammarResult.correct && (
+                      <p className="text-sm text-gray-400">
+                        Correct: <span className="text-white font-medium">{grammarResult.correctAnswer}</span>
+                      </p>
+                    )}
+                  </div>
+                ) : (
+                  <div className={`w-16 h-16 rounded-full flex items-center justify-center text-2xl transition-all
+                    ${phase === "listening" ? "bg-red-500 animate-pulse shadow-lg shadow-red-500/40" : ""}
+                    ${phase === "processing" ? "bg-yellow-500 shadow-lg shadow-yellow-500/40" : ""}
+                    ${phase === "speaking" ? "bg-blue-500 shadow-lg shadow-blue-500/40" : ""}
+                    ${phase === "idle" ? "bg-gray-800" : ""}
+                  `}>
+                    {phase === "processing" ? "⏳" : phase === "speaking" ? "🔊" : "🎙️"}
+                  </div>
+                )}
+                <p className="text-xs text-gray-600">{phaseLabel[phase]}</p>
+              </div>
+
+              <div className="flex gap-2 items-center text-xs text-gray-600">
+                <span>{grammarScore} correct</span>
+                <span>·</span>
+                <span>{grammarIndex - grammarScore} wrong</span>
+              </div>
+            </div>
+          )}
+
+          {grammarSubphase === "complete" && (
+            <div className="flex flex-col items-center gap-6 text-center">
+              <p className="text-4xl">
+                {grammarScore === grammarExercises.length ? "🏆" : grammarScore >= grammarExercises.length * 0.7 ? "⭐" : "💪"}
+              </p>
+              <div>
+                <p className="text-white text-2xl font-bold">{grammarScore} / {grammarExercises.length}</p>
+                <p className="text-gray-400 text-sm mt-1">{grammarTopic}</p>
+              </div>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => generateGrammar(grammarTopic)}
+                  className="px-6 py-2.5 rounded-full bg-white text-gray-900 text-sm font-semibold hover:bg-gray-100 transition-colors"
+                >
+                  Try again
+                </button>
+                <button
+                  onClick={resetGrammarState}
+                  className="px-6 py-2.5 rounded-full bg-gray-800 text-gray-300 text-sm font-semibold hover:bg-gray-700 transition-colors"
+                >
+                  New topic
+                </button>
+              </div>
+            </div>
+          )}
+
         </div>
 
       ) : mode === "story" ? (

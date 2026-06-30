@@ -58,6 +58,30 @@ The story should be 3–5 paragraphs, use simple but natural German, and be inte
 Reply with JSON only: {"title":"<story title in German>","story":"<the full story in German, paragraphs separated by \\n\\n>"}`,
     user: (subject: string) => `Subject: ${subject}`,
   },
+  grammar_generate: {
+    system: `You are a German language teacher. Generate exactly 6 fill-in-the-blank German grammar exercises for the given topic.
+Rules:
+- Appropriate for A2/B1 learners
+- Exactly one ___ blank per sentence
+- Clear, unambiguous answer (single word or short phrase)
+- Use common everyday vocabulary
+- Test different aspects of the topic
+
+Reply with JSON only:
+{"exercises":[{"sentence":"<German sentence with ___ for the blank>","answer":"<correct word or phrase>","hint":"<short grammar label in English, e.g. 'dative article (masculine)'>"}]}`,
+    user: (topic: string) => `Grammar topic: ${topic}`,
+  },
+  grammar_check: {
+    system: `Check if the student's spoken answer correctly fills the blank in a German grammar exercise.
+Rules:
+- Ignore capitalisation
+- Accept minor speech-recognition errors for the same word
+- If multiple grammatical forms are valid in context, accept them
+- Be strict about core grammar (wrong case or tense = wrong)
+Reply with JSON only: {"correct":true|false}`,
+    user: (sentence: string, answer: string, userAnswer: string) =>
+      `Sentence: ${sentence}\nCorrect answer: ${answer}\nStudent answer: ${userAnswer}`,
+  },
 };
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
@@ -77,6 +101,29 @@ export async function POST(req: NextRequest) {
   const { mode = "english" } = body;
 
   try {
+    if (mode === "grammar_generate") {
+      const { topic } = body;
+      if (!topic?.trim()) return NextResponse.json({ error: "No topic" }, { status: 400 });
+      const prompt = PROMPTS.grammar_generate;
+      const result = await makeModel().generateContent([
+        { text: prompt.system },
+        { text: prompt.user(topic.trim()) },
+      ]);
+      return NextResponse.json(JSON.parse(result.response.text()));
+    }
+
+    if (mode === "grammar_check") {
+      const { sentence, answer, userAnswer } = body;
+      const norm = (s: string) => s?.trim().toLowerCase().replace(/[.,!?;:-]/g, "") ?? "";
+      if (norm(userAnswer) === norm(answer)) return NextResponse.json({ correct: true });
+      const prompt = PROMPTS.grammar_check;
+      const result = await makeModel().generateContent([
+        { text: prompt.system },
+        { text: prompt.user(sentence, answer, userAnswer) },
+      ]);
+      return NextResponse.json(JSON.parse(result.response.text()));
+    }
+
     if (mode === "discussion" && body.storyContext && body.initialQuestion) {
       const systemPrompt = `${PROMPTS.discussion.system}\n\nThe user has just read this German story:\n\n${body.storyContext}\n\nOpen the conversation by asking the user one specific, engaging question about the story in German.`;
       const result = await makeModel().generateContent([
