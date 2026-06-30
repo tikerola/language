@@ -77,6 +77,15 @@ export async function POST(req: NextRequest) {
   const { mode = "english" } = body;
 
   try {
+    if (mode === "discussion" && body.storyContext && body.initialQuestion) {
+      const systemPrompt = `${PROMPTS.discussion.system}\n\nThe user has just read this German story:\n\n${body.storyContext}\n\nOpen the conversation by asking the user one specific, engaging question about the story in German.`;
+      const result = await makeModel().generateContent([
+        { text: systemPrompt },
+        { text: "Beginne das Gespräch." },
+      ]);
+      return NextResponse.json(JSON.parse(result.response.text()));
+    }
+
     if (mode === "vocabulary_generate") {
       const { topic } = body;
       if (!topic?.trim()) {

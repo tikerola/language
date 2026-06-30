@@ -80,7 +80,7 @@ function formatStoryDate(ts: number): string {
   return new Date(ts).toLocaleDateString("en-GB", { day: "numeric", month: "short" });
 }
 
-const VERSION = "1.0.12";
+const VERSION = "1.0.13";
 
 // Find the character position N words before `charPos` in `text`.
 function rewindPosition(text: string, charPos: number, wordsBack: number): number {
@@ -571,6 +571,30 @@ export default function VoiceTutor() {
       vocabSubphaseRef.current = "category";
     }
   }, [cancel, startLearningPhase]);
+
+  const handleToggleStoryContext = useCallback(async () => {
+    const next = !useStoryContext;
+    setUseStoryContext(next);
+    if (!next || !storyText) return;
+
+    setPhase("processing");
+    try {
+      const res = await fetch("/api/translate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: "discussion", storyContext: storyText, initialQuestion: true }),
+      });
+      if (!res.ok) throw new Error();
+      const data = await res.json();
+      lastDiscussionReplyRef.current = data.german;
+      setResult({ mode: "discussion", german: data.german });
+      setEcho(data.german);
+      setPhase("speaking");
+      speak(data.german);
+    } catch {
+      setPhase("idle");
+    }
+  }, [useStoryContext, storyText, speak, setEcho]);
 
   const startStoryVocab = useCallback(() => {
     const words = storyVocabWords.map(w => ({
@@ -1173,8 +1197,8 @@ export default function VoiceTutor() {
                       <rect x="14" y="5" width="4" height="14" rx="1"/>
                     </svg>
                   ) : (
-                    <svg className="w-4 h-4 fill-white translate-x-0.5" viewBox="0 0 24 24">
-                      <path d="M8 5v14l11-7z"/>
+                    <svg className="w-4 h-4 fill-white" viewBox="0 0 24 24">
+                      <path d="M9 5l9 7-9 7V5z"/>
                     </svg>
                   )}
                 </button>
@@ -1313,7 +1337,7 @@ export default function VoiceTutor() {
 
             {mode === "discussion" && storyText && (
               <button
-                onClick={() => setUseStoryContext((v) => !v)}
+                onClick={handleToggleStoryContext}
                 className={`px-4 py-1.5 rounded-full text-xs font-medium tracking-wide transition-colors
                   ${useStoryContext
                     ? "bg-yellow-600 text-white"
