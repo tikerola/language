@@ -80,7 +80,7 @@ function formatStoryDate(ts: number): string {
   return new Date(ts).toLocaleDateString("en-GB", { day: "numeric", month: "short" });
 }
 
-const VERSION = "1.0.13";
+const VERSION = "1.0.14";
 
 // Find the character position N words before `charPos` in `text`.
 function rewindPosition(text: string, charPos: number, wordsBack: number): number {
@@ -119,6 +119,11 @@ export default function VoiceTutor() {
   const [vocabLastResult, setVocabLastResult] = useState<{ correct: boolean; correctWord: string } | null>(null);
 
   const [useStoryContext, setUseStoryContext] = useState(false);
+
+  // Stats
+  const [streak, setStreak] = useState(0);
+  const [wordsMastered, setWordsMastered] = useState(0);
+  const hasRecordedActivityRef = useRef(false);
 
   // Story state
   const [storySubphase, setStorySubphase] = useState<StorySubphase>("input");
@@ -164,6 +169,13 @@ export default function VoiceTutor() {
     fetch("/api/stories")
       .then((r) => r.json())
       .then((data) => { if (Array.isArray(data)) setStoryArchive(data); })
+      .catch(() => {});
+    fetch("/api/stats")
+      .then((r) => r.json())
+      .then((data) => {
+        if (typeof data.streak === "number") setStreak(data.streak);
+        if (typeof data.words_mastered === "number") setWordsMastered(data.words_mastered);
+      })
       .catch(() => {});
   }, []);
 
@@ -272,6 +284,31 @@ export default function VoiceTutor() {
 
   const { speak, cancel } = useSpeechSynthesis({ onEnd: handleTTSEnd, onBoundary: handleBoundary });
 
+  const recordActivity = useCallback(() => {
+    if (hasRecordedActivityRef.current) return;
+    hasRecordedActivityRef.current = true;
+    const date = new Date().toISOString().split("T")[0];
+    fetch("/api/stats", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "activity", date }),
+    })
+      .then((r) => r.json())
+      .then((data) => { if (typeof data.streak === "number") setStreak(data.streak); })
+      .catch(() => {});
+  }, []);
+
+  const recordMastered = useCallback((count: number) => {
+    fetch("/api/stats", {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "mastered", count }),
+    })
+      .then((r) => r.json())
+      .then((data) => { if (typeof data.words_mastered === "number") setWordsMastered(data.words_mastered); })
+      .catch(() => {});
+  }, []);
+
   const handleTranscript = useCallback(
     async (transcript: string) => {
       setSpoken(transcript);
@@ -318,6 +355,8 @@ export default function VoiceTutor() {
             // All mastered!
             vocabSubphaseRef.current = "complete";
             setVocabSubphase("complete");
+            recordActivity();
+            recordMastered(updated.length);
             ttsQueueRef.current = correct
               ? []
               : [{ text: "Ausgezeichnet! Du hast alle Wörter gelernt!", delay: 800 }];
@@ -385,13 +424,14 @@ export default function VoiceTutor() {
         setEcho(data.german);
         setPhase("speaking");
         speak(data.german);
+        recordActivity();
       } catch {
         setErrorMsg("Translation failed. Listening again...");
         setPhase("error");
         setTimeout(() => { setPhase("listening"); restart(); }, 2000);
       }
     },
-    [speak, mode]
+    [speak, mode, useStoryContext, storyText, recordActivity, recordMastered]
   );
 
   const handleError = useCallback((msg: string) => {
@@ -465,6 +505,7 @@ export default function VoiceTutor() {
       setStoryTitle(title);
       setStoryText(text);
       setStorySubphase("reading");
+      recordActivity();
       if (title && text) {
         const saved = await fetch("/api/stories", {
           method: "POST",
@@ -845,7 +886,22 @@ export default function VoiceTutor() {
       <h1 className="text-xl font-semibold tracking-wide text-gray-400 mb-1">
         German Voice Tutor
       </h1>
-      <p className="text-xs text-gray-700 mb-8">v{VERSION}</p>
+      <p className="text-xs text-gray-700 mb-4">v{VERSION}</p>
+
+      {(streak > 0 || wordsMastered > 0) && (
+        <div className="flex gap-5 mb-6 text-sm text-gray-500">
+          {streak > 0 && (
+            <span title={`${streak}-day streak`}>
+              🔥 {streak} {streak === 1 ? "day" : "days"}
+            </span>
+          )}
+          {wordsMastered > 0 && (
+            <span title="Words mastered in vocab quiz">
+              📚 {wordsMastered} {wordsMastered === 1 ? "word" : "words"}
+            </span>
+          )}
+        </div>
+      )}
 
       {/* Mode selector */}
       <div className="flex flex-wrap gap-2 mb-10 justify-center">
