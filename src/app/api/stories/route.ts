@@ -16,6 +16,7 @@ export async function GET() {
       subject: row.subject,
       createdAt: row.created_at,
       translations: row.translations ?? {},
+      vocabWords: row.vocab_words ?? [],
     }))
   );
 }
@@ -24,7 +25,7 @@ export async function POST(req: NextRequest) {
   const { title, text, subject, createdAt } = await req.json();
   const { data, error } = await supabase
     .from("stories")
-    .insert({ title, text, subject, created_at: createdAt, translations: {} })
+    .insert({ title, text, subject, created_at: createdAt, translations: {}, vocab_words: [] })
     .select()
     .single();
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });

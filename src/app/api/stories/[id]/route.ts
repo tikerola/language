@@ -7,10 +7,13 @@ export async function PATCH(
   ctx: RouteContext<"/api/stories/[id]">
 ) {
   const { id } = await ctx.params;
-  const { translations } = await req.json();
+  const { translations, vocabWords } = await req.json();
+  const update: Record<string, unknown> = {};
+  if (translations !== undefined) update.translations = translations;
+  if (vocabWords !== undefined) update.vocab_words = vocabWords;
   const { error } = await supabase
     .from("stories")
-    .update({ translations })
+    .update(update)
     .eq("id", Number(id));
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json({ ok: true });

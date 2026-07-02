@@ -89,13 +89,14 @@ interface StoryEntry {
   subject: string;
   createdAt: number;
   translations?: Record<string, { german: string; finnish: string }>;
+  vocabWords?: { key: string; german: string; finnish: string }[];
 }
 
 function formatStoryDate(ts: number): string {
   return new Date(ts).toLocaleDateString("en-GB", { day: "numeric", month: "short" });
 }
 
-const VERSION = "1.0.19";
+const VERSION = "1.0.20";
 
 // Find the character position N words before `charPos` in `text`.
 function rewindPosition(text: string, charPos: number, wordsBack: number): number {
@@ -696,8 +697,9 @@ export default function VoiceTutor() {
       storyUtteranceRef.current = null;
       window.speechSynthesis.cancel();
     }
-    storySelectedKeysRef.current = new Set();
-    storyKeyToGermanRef.current = new Map();
+    const vocabWords = entry.vocabWords ?? [];
+    storySelectedKeysRef.current = new Set(vocabWords.map((w) => w.key));
+    storyKeyToGermanRef.current = new Map(vocabWords.map((w) => [w.key, w.german.toLowerCase()]));
     storyTranslationCacheRef.current = new Map(
       Object.entries(entry.translations ?? {}) as [string, { german: string; finnish: string }][]
     );
@@ -705,8 +707,17 @@ export default function VoiceTutor() {
     storyPlayOffsetRef.current = 0;
     storyCharIndexRef.current = 0;
     storyPlayStartTimeRef.current = 0;
-    setStorySelectedKeys(new Set());
-    setStoryVocabWords([]);
+    setStorySelectedKeys(new Set(storySelectedKeysRef.current));
+    const seenGerman = new Set<string>();
+    setStoryVocabWords(
+      vocabWords.reduce<VocabWord[]>((acc, w) => {
+        const gk = w.german.toLowerCase();
+        if (seenGerman.has(gk)) return acc;
+        seenGerman.add(gk);
+        acc.push({ german: w.german, finnish: w.finnish, consecutiveCorrect: 0, attempts: 0, correctAttempts: 0 });
+        return acc;
+      }, [])
+    );
     setStoryTooltip(null);
     setIsStoryPlaying(false);
     setStorySubjectInput(entry.subject);
@@ -856,6 +867,24 @@ export default function VoiceTutor() {
     }).catch(() => {});
   }, []);
 
+  const persistVocabWords = useCallback(() => {
+    const id = currentStoryIdRef.current;
+    if (!id) return;
+    const vocabWords = [...storySelectedKeysRef.current].map((key) => {
+      const cached = storyTranslationCacheRef.current.get(key);
+      const germanLower = storyKeyToGermanRef.current.get(key) ?? "";
+      return { key, german: cached?.german ?? germanLower, finnish: cached?.finnish ?? "" };
+    });
+    fetch(`/api/stories/${id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ vocabWords }),
+    }).catch(() => {});
+    setStoryArchive((prev) =>
+      prev.map((s) => (s.id === id ? { ...s, vocabWords } : s))
+    );
+  }, []);
+
   const handleWordHover = useCallback(async (instanceKey: string, rawWord: string) => {
     const cacheKey = rawWord.toLowerCase();
     const cached = storyTranslationCacheRef.current.get(cacheKey);
@@ -891,6 +920,7 @@ export default function VoiceTutor() {
         storyKeyToGermanRef.current.delete(key);
         setStoryVocabWords(prev => prev.filter(w => w.german.toLowerCase() !== canonical));
       }
+      persistVocabWords();
       return;
     }
 
@@ -904,6 +934,7 @@ export default function VoiceTutor() {
         if (prev.some(w => w.german.toLowerCase() === german.toLowerCase())) return prev;
         return [...prev, vocabWord];
       });
+      persistVocabWords();
     };
 
     const cached = storyTranslationCacheRef.current.get(key);
