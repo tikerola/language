@@ -6,7 +6,7 @@ import { useSpeechSynthesis } from "@/hooks/useSpeechSynthesis";
 
 type Phase = "idle" | "listening" | "processing" | "speaking" | "error";
 type Mode = "english" | "german" | "discussion" | "vocabulary" | "radio" | "story" | "grammar";
-type VocabSubphase = "category" | "loading" | "learning" | "quiz" | "complete";
+type VocabSubphase = "category" | "loading" | "learning" | "ready" | "quiz" | "complete";
 type StorySubphase = "input" | "loading" | "reading";
 type GrammarSubphase = "category" | "loading" | "drilling" | "complete";
 
@@ -96,7 +96,7 @@ function formatStoryDate(ts: number): string {
   return new Date(ts).toLocaleDateString("en-GB", { day: "numeric", month: "short" });
 }
 
-const VERSION = "1.0.20";
+const VERSION = "1.0.21";
 
 // Find the character position N words before `charPos` in `text`.
 function rewindPosition(text: string, charPos: number, wordsBack: number): number {
@@ -285,17 +285,10 @@ export default function VoiceTutor() {
 
     if (modeRef.current === "vocabulary") {
       if (vocabSubphaseRef.current === "learning") {
-        // Learning phase complete → start quiz
-        const words = vocabWordsRef.current;
-        if (words.length === 0) return;
-        const word = words[Math.floor(Math.random() * words.length)];
-        vocabQuizWordRef.current = word;
-        vocabSubphaseRef.current = "quiz";
-        setVocabSubphase("quiz");
-        setVocabQuizWord(word);
-        setVocabLastResult(null);
-        setPhase("speaking");
-        speak(word.finnish, 1.0, "fi-FI");
+        // Learning walkthrough complete → wait for the user to start the quiz or repeat
+        vocabSubphaseRef.current = "ready";
+        setVocabSubphase("ready");
+        setPhase("idle");
         return;
       }
       if (vocabSubphaseRef.current === "complete") {
@@ -757,6 +750,29 @@ export default function VoiceTutor() {
     setVocabLearningDisplay({ finnish: first.finnish, german: first.german, showTranslation: false, index: 0 });
     speak(first.german, 1.0, "de-DE");
   }, [speak]);
+
+  const startQuizPhase = useCallback(() => {
+    cancel();
+    clearTTSQueue();
+    const words = vocabWordsRef.current.map((w) => ({ ...w, consecutiveCorrect: 0, attempts: 0, correctAttempts: 0 }));
+    vocabWordsRef.current = words;
+    setVocabWords(words);
+    if (words.length === 0) return;
+    const word = words[Math.floor(Math.random() * words.length)];
+    vocabQuizWordRef.current = word;
+    vocabSubphaseRef.current = "quiz";
+    setVocabSubphase("quiz");
+    setVocabQuizWord(word);
+    setVocabLastResult(null);
+    setPhase("speaking");
+    speak(word.finnish, 1.0, "fi-FI");
+  }, [cancel, clearTTSQueue, speak]);
+
+  const repeatWords = useCallback(() => {
+    cancel();
+    clearTTSQueue();
+    startLearningPhase(vocabWordsRef.current);
+  }, [cancel, clearTTSQueue, startLearningPhase]);
 
   const generateVocabulary = useCallback(async (category: string) => {
     setVocabSubphase("loading");
@@ -1300,11 +1316,54 @@ export default function VoiceTutor() {
                 </div>
               </div>
 
+              <div className="flex gap-2 mt-8">
+                <button
+                  onClick={repeatWords}
+                  className="px-6 py-2 rounded-full text-xs text-gray-400 bg-gray-800 hover:text-gray-200 transition-colors"
+                >
+                  Repeat from start
+                </button>
+                <button
+                  onClick={startQuizPhase}
+                  className="px-6 py-2 rounded-full text-xs font-semibold text-gray-900 bg-white hover:bg-gray-100 transition-colors"
+                >
+                  Start Quiz
+                </button>
+                <button
+                  onClick={handleStop}
+                  className="px-6 py-2 rounded-full text-xs text-gray-500 bg-gray-800 hover:text-gray-300 transition-colors"
+                >
+                  Stop
+                </button>
+              </div>
+            </div>
+          )}
+
+          {vocabSubphase === "ready" && (
+            <div className="flex flex-col items-center gap-6 text-center">
+              <p className="text-2xl font-bold text-white">Words learned!</p>
+              <p className="text-gray-500 text-sm">{vocabWords.length} words · ready when you are</p>
+
+              <div className="flex gap-3 mt-2">
+                <button
+                  onClick={repeatWords}
+                  className="px-6 py-2.5 rounded-full bg-gray-800 text-gray-300 text-sm font-semibold hover:bg-gray-700 transition-colors"
+                >
+                  Repeat words
+                </button>
+                <button
+                  onClick={startQuizPhase}
+                  className="px-6 py-2.5 rounded-full bg-white text-gray-900 text-sm font-semibold hover:bg-gray-100 transition-colors"
+                >
+                  Start Quiz
+                </button>
+              </div>
+
               <button
-                onClick={handleStop}
-                className="mt-8 px-6 py-2 rounded-full text-xs text-gray-500 bg-gray-800 hover:text-gray-300 transition-colors"
+                onClick={resetVocabState}
+                className="mt-2 text-xs text-gray-600 hover:text-gray-400 transition-colors"
               >
-                Stop
+                Choose a different category
               </button>
             </div>
           )}
@@ -1394,12 +1453,20 @@ export default function VoiceTutor() {
                 )}
               </div>
 
-              <button
-                onClick={resetVocabState}
-                className="mt-2 px-8 py-3 rounded-full bg-white text-gray-900 text-sm font-semibold hover:bg-gray-100 transition-colors"
-              >
-                New Session
-              </button>
+              <div className="flex gap-3 mt-2">
+                <button
+                  onClick={repeatWords}
+                  className="px-6 py-2.5 rounded-full bg-gray-800 text-gray-300 text-sm font-semibold hover:bg-gray-700 transition-colors"
+                >
+                  Repeat words
+                </button>
+                <button
+                  onClick={resetVocabState}
+                  className="px-6 py-2.5 rounded-full bg-white text-gray-900 text-sm font-semibold hover:bg-gray-100 transition-colors"
+                >
+                  New Session
+                </button>
+              </div>
             </div>
           )}
         </div>
