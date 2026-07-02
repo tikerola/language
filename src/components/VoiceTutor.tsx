@@ -26,7 +26,7 @@ interface VocabWord {
 }
 
 type Result =
-  | { mode: "english"; german: string; literal: string; pronunciation: string }
+  | { mode: "english"; german: string; literal: string }
   | { mode: "german"; german: string; note: string }
   | { mode: "discussion"; german: string };
 
@@ -95,7 +95,7 @@ function formatStoryDate(ts: number): string {
   return new Date(ts).toLocaleDateString("en-GB", { day: "numeric", month: "short" });
 }
 
-const VERSION = "1.0.17";
+const VERSION = "1.0.19";
 
 // Find the character position N words before `charPos` in `text`.
 function rewindPosition(text: string, charPos: number, wordsBack: number): number {
@@ -134,6 +134,13 @@ export default function VoiceTutor() {
   const [vocabLastResult, setVocabLastResult] = useState<{ correct: boolean; correctWord: string } | null>(null);
 
   const [useStoryContext, setUseStoryContext] = useState(false);
+
+  // DE-correction story quiz state
+  const [useStoryQuiz, setUseStoryQuiz] = useState(false);
+  const [storyQuizQuestion, setStoryQuizQuestion] = useState<string | null>(null);
+  const useStoryQuizRef = useRef(false);
+  const storyQuizQuestionsRef = useRef<string[]>([]);
+  const storyTextRef = useRef("");
 
   // Stats
   const [streak, setStreak] = useState(0);
@@ -192,6 +199,8 @@ export default function VoiceTutor() {
   useEffect(() => { modeRef.current = mode; }, [mode]);
   useEffect(() => { repeatModeRef.current = repeatMode; }, [repeatMode]);
   useEffect(() => { if (phase !== "listening") setMicReady(false); }, [phase]);
+  useEffect(() => { useStoryQuizRef.current = useStoryQuiz; }, [useStoryQuiz]);
+  useEffect(() => { storyTextRef.current = storyText; }, [storyText]);
 
   const ttsQueueRef = useRef<TTSItem[]>([]);
   const clearTTSQueue = useCallback(() => { ttsQueueRef.current = []; }, []);
@@ -325,6 +334,33 @@ export default function VoiceTutor() {
       setTimeout(() => speak(currentGermanRef.current), 2000);
     } else {
       hasRepeatedRef.current = false;
+
+      if (modeRef.current === "german" && useStoryQuizRef.current && storyTextRef.current) {
+        setPhase("processing");
+        fetch("/api/translate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            mode: "story_question",
+            storyText: storyTextRef.current,
+            askedQuestions: storyQuizQuestionsRef.current,
+          }),
+        })
+          .then((r) => (r.ok ? r.json() : null))
+          .then((data) => {
+            if (data?.question) {
+              storyQuizQuestionsRef.current = [...storyQuizQuestionsRef.current, data.question].slice(-8);
+              setStoryQuizQuestion(data.question);
+            }
+          })
+          .catch(() => {})
+          .finally(() => {
+            setPhase("listening");
+            restart();
+          });
+        return;
+      }
+
       setPhase("listening");
       restart();
     }
@@ -765,6 +801,35 @@ export default function VoiceTutor() {
       setPhase("idle");
     }
   }, [useStoryContext, storyText, speak, setEcho]);
+
+  const handleToggleStoryQuiz = useCallback(async () => {
+    const next = !useStoryQuiz;
+    setUseStoryQuiz(next);
+    if (!next || !storyText) {
+      setStoryQuizQuestion(null);
+      storyQuizQuestionsRef.current = [];
+      return;
+    }
+
+    setPhase("processing");
+    try {
+      const res = await fetch("/api/translate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: "story_question", storyText, askedQuestions: storyQuizQuestionsRef.current }),
+      });
+      if (!res.ok) throw new Error();
+      const data = await res.json();
+      storyQuizQuestionsRef.current = [...storyQuizQuestionsRef.current, data.question].slice(-8);
+      setStoryQuizQuestion(data.question);
+      setSpoken("");
+      setResult(null);
+      setPhase("listening");
+      start();
+    } catch {
+      setPhase("idle");
+    }
+  }, [useStoryQuiz, storyText, start]);
 
   const startStoryVocab = useCallback(() => {
     const words = storyVocabWords.map(w => ({
@@ -1607,6 +1672,13 @@ export default function VoiceTutor() {
       ) : (
         /* ── Other modes ── */
         <>
+          {mode === "german" && useStoryQuiz && storyQuizQuestion && (
+            <div className="mb-8 w-full max-w-md text-center">
+              <p className="text-xs text-gray-500 uppercase tracking-wider mb-1">Question (Finnish) · answer in German</p>
+              <p className="text-white text-xl font-medium">{storyQuizQuestion}</p>
+            </div>
+          )}
+
           <button
             onClick={isActive ? handleStop : handleStart}
             className={`w-24 h-24 rounded-full text-3xl transition-all duration-200 focus:outline-none
@@ -1653,7 +1725,6 @@ export default function VoiceTutor() {
                   {showDetails && (
                     <div className="mt-3 space-y-2 text-sm text-gray-400">
                       <p><span className="text-gray-500">Literal: </span>{result.literal}</p>
-                      <p><span className="text-gray-500">Pronunciation: </span>{result.pronunciation}</p>
                     </div>
                   )}
                 </>
@@ -1689,6 +1760,19 @@ export default function VoiceTutor() {
                   }`}
               >
                 {useStoryContext ? `📖 ${storyTitle || "Story"}` : "Use story"}
+              </button>
+            )}
+
+            {mode === "german" && storyText && (
+              <button
+                onClick={handleToggleStoryQuiz}
+                className={`px-4 py-1.5 rounded-full text-xs font-medium tracking-wide transition-colors
+                  ${useStoryQuiz
+                    ? "bg-yellow-600 text-white"
+                    : "bg-gray-800 text-gray-500 hover:text-gray-300"
+                  }`}
+              >
+                {useStoryQuiz ? `📖 ${storyTitle || "Story"} quiz` : "Quiz from story"}
               </button>
             )}
           </div>

@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from "next/server";
 
 const PROMPTS = {
   english: {
-    system: `Translate the Finnish sentence to natural spoken German (A2/B1 level). Reply with JSON only:\n{"german":"<translation>","literal":"<word-for-word Finnish>","pronunciation":"<simplified phonetic>"}`,
+    system: `Translate the Finnish sentence to natural spoken German (A2/B1 level). Reply with JSON only:\n{"german":"<translation>","literal":"<word-for-word Finnish>"}`,
     user: (text: string) => text,
   },
   german: {
@@ -57,6 +57,17 @@ Return JSON only: {"german":"<canonical form>","finnish":"<Finnish translation>"
 The story should be 3–5 paragraphs, use simple but natural German, and be interesting to read.
 Reply with JSON only: {"title":"<story title in German>","story":"<the full story in German, paragraphs separated by \\n\\n>"}`,
     user: (subject: string) => `Subject: ${subject}`,
+  },
+  story_question: {
+    system: `You are a German language teacher. Given a German story, ask exactly ONE short comprehension question about it, written in FINNISH. The student will answer the question with a spoken German sentence, so phrase it so a full-sentence German answer makes sense (avoid pure yes/no questions when possible).
+If a list of previously asked questions is given, ask about a different part or aspect of the story — do not repeat them.
+Reply with JSON only: {"question":"<question in Finnish>"}`,
+    user: (storyText: string, askedQuestions?: string[]) =>
+      `Story:\n${storyText}${
+        askedQuestions?.length
+          ? `\n\nQuestions already asked (ask something different this time):\n${askedQuestions.map((q) => `- ${q}`).join("\n")}`
+          : ""
+      }`,
   },
   grammar_generate: {
     system: `You are a German language teacher. Generate exactly 6 fill-in-the-blank German grammar exercises for the given topic.
@@ -168,6 +179,19 @@ export async function POST(req: NextRequest) {
       const result = await makeModel().generateContent([
         { text: prompt.system },
         { text: prompt.user(subject.trim()) },
+      ]);
+      return NextResponse.json(JSON.parse(result.response.text()));
+    }
+
+    if (mode === "story_question") {
+      const { storyText, askedQuestions } = body;
+      if (!storyText?.trim()) {
+        return NextResponse.json({ error: "No story provided" }, { status: 400 });
+      }
+      const prompt = PROMPTS.story_question;
+      const result = await makeModel().generateContent([
+        { text: prompt.system },
+        { text: prompt.user(storyText, askedQuestions) },
       ]);
       return NextResponse.json(JSON.parse(result.response.text()));
     }
